@@ -2,7 +2,7 @@
 // other 60%. One screen, nothing to scroll except the questions themselves.
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { Activity, ArrowLeft, ArrowRight, BellRing, ListChecks, Menu, PhoneCall, ShieldAlert, UserCheck } from "lucide-react";
+import { Activity, ArrowLeft, ArrowRight, BellRing, Check, ListChecks, Menu, PhoneCall, ShieldAlert, UserCheck } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -20,9 +20,11 @@ import { KnownStrip } from "./KnownStrip";
 import { LabelConsole } from "./LabelConsole";
 import { PropertyMatch } from "./PropertyMatch";
 import { ClosingDesk } from "./ClosingDesk";
+import { CustomerContextRail } from "./CustomerContextRail";
 import { ContactActions } from "@/components/common/ContactActions";
 import { CloseCommitButton } from "@/components/commitments/CloseCommitButton";
 import { canonicalCustomerId } from "@/lib/canonical/customer-id";
+import { trySyncNextAction } from "@/lib/backend-safety";
 
 type Pane = "WORK" | "CAPTURED" | "MATCH" | "LABELS" | "CLOSING" | "QUEUE" | "DRAFTS";
 
@@ -69,7 +71,7 @@ export interface SplitFocus { name?: string; phone?: string; key?: string; canon
 
 export function SplitFlow({ embedded = false, focus, panelOnly = false }: { embedded?: boolean; focus?: SplitFocus; panelOnly?: boolean }) {
   const { leads, me, mode, setMode, claim, setNext, logActivity, escalate, batches, buildBatch, closeBatch, reopenBatch } = useBookingFlow();
-  const [widthPct, setWidthPct] = useState(40);
+  const [widthPct, setWidthPct] = useState(58);
   const [dragging, setDragging] = useState(false);
   const [closeNote, setCloseNote] = useState("");
   const [closingId, setClosingId] = useState<string | null>(null);
@@ -77,7 +79,8 @@ export function SplitFlow({ embedded = false, focus, panelOnly = false }: { embe
   // remember the width the operator picked, like a column width in a sheet
   useEffect(() => {
     const saved = Number(localStorage.getItem(WIDTH_KEY));
-    if (saved >= 20 && saved <= 100) setWidthPct(saved);
+    if (saved >= 25 && saved <= 100) setWidthPct(saved);
+    else setWidthPct(58);
   }, []);
   useEffect(() => { localStorage.setItem(WIDTH_KEY, String(widthPct)); }, [widthPct]);
   useEffect(() => {
@@ -170,312 +173,348 @@ export function SplitFlow({ embedded = false, focus, panelOnly = false }: { embe
 
   return (
     <div className={cn("flex w-full overflow-hidden", panelOnly ? "h-full" : embedded ? "h-[calc(100vh-10rem)]" : "h-screen")}>
-    <div className="flex min-w-0 flex-col overflow-hidden bg-background" style={{ width: panelOnly ? "100%" : `${widthPct}%` }}>
-      {/* Result header — never scrolls away */}
-      <header className="shrink-0 border-b px-2 py-1">
-        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
-          <div className="flex min-w-0 items-center gap-1 overflow-hidden">
-            <h1 className="shrink-0 text-xs font-semibold">Booking Flow</h1>
-            {mounted && (
-              <div className="flex min-w-0 gap-1 overflow-x-auto">
-                <Badge variant="outline" className="shrink-0 px-1 text-[9px]"><PhoneCall className="mr-0.5 h-2.5 w-2.5" />{stats.calls} calls</Badge>
-                <Badge variant="outline" className="shrink-0 px-1 text-[9px]"><ListChecks className="mr-0.5 h-2.5 w-2.5" />{stats.saved} saved</Badge>
-                {stats.late > 0 && <Badge variant="destructive" className="shrink-0 px-1 text-[9px]">{stats.late} late</Badge>}
-              </div>
-            )}
-          </div>
-          <div className="flex shrink-0 items-center gap-1">
-            {!panelOnly && (
-              <div className="flex items-center gap-0.5 rounded-md border px-1 py-0.5">
-                <span className="text-[9px] text-muted-foreground">W</span>
-                {WIDTH_PRESETS.map((p) => (
-                  <button key={p} type="button" onClick={() => setWidthPct(p)}
-                    className={cn("rounded px-1 text-[9px]", widthPct === p ? "bg-primary/15 text-primary" : "text-muted-foreground")}>
-                    {p}%
-                  </button>
-                ))}
-              </div>
-            )}
-            <Button size="sm" variant={mode === "GUIDED" ? "default" : "outline"} className="h-6 px-2 text-[10px]" onClick={() => setMode("GUIDED")}>Understand</Button>
-            <Button size="sm" variant={mode === "EXPERT" ? "default" : "outline"} className="h-6 px-2 text-[10px]" onClick={() => setMode("EXPERT")}>Expert</Button>
-            <div className="relative">
-              <Button size="sm" variant="outline" className="h-6 px-2 text-[10px]" onClick={() => setMenuOpen((v) => !v)} aria-expanded={menuOpen} aria-label="Open app menu">
-                <Menu className="h-3 w-3" />
-              </Button>
-              {menuOpen && (
-                <>
-                  <button type="button" aria-label="Close menu" className="fixed inset-0 z-40 cursor-default" onClick={() => setMenuOpen(false)} />
-                  <div className="absolute right-0 z-50 mt-1 max-h-[70vh] w-56 overflow-y-auto rounded-md border bg-popover p-1 shadow-md">
-                    {(() => {
-                      let lastGroup = "";
-                      return MENU.map((m) => (
-                        <div key={m.to}>
-                          {m.group !== lastGroup && ((lastGroup = m.group), (<p className="px-2 pb-0.5 pt-1.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">{m.group}</p>))}
-                          <Link to={m.to} onClick={() => setMenuOpen(false)}
-                            className="block rounded-sm px-2 py-1 text-[11px] hover:bg-accent hover:text-accent-foreground">
-                            {m.label}
-                          </Link>
-                        </div>
-                      ));
-                    })()}
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-      </header>
-
-      {/* Customer line + the five answers, compact */}
-      {lead && (
-        <div className="shrink-0 border-b px-2 py-1">
+      <div className="flex min-w-0 flex-col overflow-hidden bg-background" style={{ width: panelOnly ? "100%" : `${widthPct}%` }}>
+        {/* Result header — never scrolls away */}
+        <header className="shrink-0 border-b px-2.5 py-1">
           <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
-            <div className="min-w-0">
-              <p className="truncate text-sm font-semibold">{lead.name} <span className="text-[11px] font-normal text-muted-foreground">{lead.phone}</span></p>
-              <p className="truncate text-[10px] text-muted-foreground">“{lead.lastMessage}”</p>
-            </div>
-            <div className="flex shrink-0 items-center gap-1">
-              <Button size="sm" variant="ghost" className="h-6 px-2 text-[10px]" onClick={nextCustomer}>Next<ArrowRight className="ml-1 h-3 w-3" /></Button>
-            </div>
-          </div>
-          {mounted && h && (
-            <div className="mt-1 flex flex-wrap gap-1 text-[10px]">
-              <Badge variant="outline" className="text-[10px]">{h.stepNo}. {h.complete ? "Checked in" : h.step?.title}</Badge>
-              <Badge variant={lead.owner ? "secondary" : "destructive"} className="text-[10px]">{lead.owner ?? "no owner"}</Badge>
-              <Badge variant="outline" className="text-[10px]">waiting on {h.waitingOn}</Badge>
-              <Badge variant={lead.nextAction ? "outline" : "destructive"} className="text-[10px]">{lead.nextAction ?? "no next step"}</Badge>
-              <Badge variant={lead.nextActionAt && h.sla !== "LATE" ? "outline" : "destructive"} className="text-[10px]">
-                {lead.nextActionAt ? (h.sla === "LATE" ? `late ${fmtMins(h.minutesLate)}` : new Date(lead.nextActionAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })) : "no deadline"}
-              </Badge>
-            </div>
-          )}
-          {/* Copy the number, dial it, or open the WhatsApp chat — always labelled */}
-          <div className="mt-1 flex flex-wrap items-center gap-1">
-            <ContactActions phone={lead.phone} name={lead.name} />
-            <Button size="sm" className="h-7 px-2 text-[10px]" onClick={() => setActivityOpen(true)}>
-              <Activity className="mr-1 h-3 w-3" />Log activity
-            </Button>
-            <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" onClick={() => {
-              const at = new Date(Date.now() + 2 * 3_600_000).toISOString();
-              setNext(lead.id, "Follow up on decision", at);
-              setNextAction("Follow up on decision");
-              setDue(at.slice(0, 16));
-              toast.success("Follow-up set for 2 hours");
-            }}>
-              <BellRing className="mr-1 h-3 w-3" />Follow
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* What is already filled — pinned, readable while answering */}
-      {lead && <KnownStrip lead={lead} />}
-
-      {/* Pane tabs — every tool of the funnel, inside the split panel */}
-      <div className="shrink-0 overflow-x-auto border-b px-3 py-1.5">
-        <div className="flex gap-1">
-          {PANES.map((p) => (
-            <button key={p.id} type="button" onClick={() => setPane(p.id)}
-              className={cn("shrink-0 rounded-md border px-2 py-0.5 text-[10px]",
-                p.id === pane ? "border-primary bg-primary/10 text-primary" : "text-muted-foreground")}>
-              {p.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Screen rail — one row, horizontally scrollable, never wraps the layout */}
-      {lead && pane === "WORK" && (
-        <div className="shrink-0 overflow-x-auto border-b px-3 py-1.5">
-          <div className="flex gap-1">
-            {SCREENS.map((s, i) => {
-              const p = screenProgress(lead.f ?? {}, s);
-              return (
-                <button key={s.id} type="button" onClick={() => setScreenId(s.id)}
-                  className={cn("shrink-0 rounded-md border px-1.5 py-0.5 text-[10px]",
-                    s.id === screen.id ? "border-primary bg-primary/10 text-primary" : p.done === p.total ? "text-primary/70" : "text-muted-foreground")}>
-                  {i + 1}. {s.title} {p.done}/{p.total}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* The only scrolling area */}
-      <main className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
-        {pane === "CLOSING" ? (
-          <ClosingDesk onOpenLead={(id) => { setLeadId(id); setPane("WORK"); }} />
-        ) : pane === "DRAFTS" ? (
-          <div className="space-y-2">
-            <p className="text-[10px] text-muted-foreground">Four drafts a day for {me} — D1, D2, D3, D4 · {BATCH_SIZE} customers each. Close a draft when all 30 have a next step and a deadline.</p>
-            {ROUNDS.map((r) => {
-              const batch = batches.find((b) => b.handler === me && b.round === r);
-              const rows = batch ? batch.leadIds.map((id) => leads.find((l) => l.id === id)).filter(Boolean) as typeof leads : [];
-              const done = rows.filter((l) => l.nextAction && l.nextActionAt).length;
-              return (
-                <div key={r} className={cn("rounded-md border p-2", batch?.closedAt && "border-primary/40 bg-primary/5")}>
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="text-xs font-semibold">D{r} · {rows.length || BATCH_SIZE} customers</p>
-                      <p className="truncate text-[10px] text-muted-foreground">
-                        {!batch ? "Not opened yet" : batch.closedAt ? `Closed ${new Date(batch.closedAt).toLocaleString()}${batch.closeNote ? ` — ${batch.closeNote}` : ""}` : `${done}/${rows.length} have a next step and deadline`}
-                      </p>
-                    </div>
-                    <div className="flex shrink-0 gap-1">
-                      {!batch ? (
-                        <Button size="sm" className="h-7 px-2 text-[10px]" onClick={() => {
-                          const made = buildBatch(me, r);
-                          toast[made ? "success" : "error"](made ? `D${r} opened with ${made.leadIds.length} customers` : "No customers left to fill this draft");
-                        }}>Open D{r}</Button>
-                      ) : batch.closedAt ? (
-                        <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" onClick={() => { reopenBatch(batch.id); toast.success(`D${r} reopened`); }}>Reopen</Button>
-                      ) : (
-                        <Button size="sm" variant="secondary" className="h-7 px-2 text-[10px]" onClick={() => { setClosingId(batch.id); setCloseNote(""); }}>Close draft</Button>
-                      )}
-                    </div>
-                  </div>
-                  {batch && !batch.closedAt && rows.length > 0 && (
-                    <div className="mt-1.5 space-y-1">
-                      {rows.slice(0, 30).map((l) => (
-                        <button key={l.id} type="button" onClick={() => { setLeadId(l.id); setPane("WORK"); }}
-                          className={cn("flex w-full items-center justify-between gap-2 rounded border px-2 py-1 text-left", l.id === lead?.id && "border-primary bg-primary/5")}>
-                          <span className="truncate text-[11px]">{l.name}</span>
-                          <Badge variant={l.nextAction && l.nextActionAt ? "outline" : "destructive"} className="shrink-0 text-[9px]">
-                            {l.nextAction && l.nextActionAt ? "done" : "pending"}
-                          </Badge>
-                        </button>
-                      ))}
-                    </div>
+            <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+              <h1 className="shrink-0 text-xs font-semibold text-foreground">Booking Flow</h1>
+              <span className="shrink-0 text-[10px] text-muted-foreground hidden sm:inline ml-1 border-l pl-1.5 border-border/60">Move each customer one step closer to booking.</span>
+              {mounted && (
+                <div className="hidden lg:flex min-w-0 items-center gap-1.5 ml-2 text-[10px] text-muted-foreground/80">
+                  <span className="inline-flex items-center"><PhoneCall className="mr-0.5 h-2.5 w-2.5 opacity-60" />{stats.calls} calls</span>
+                  <span>·</span>
+                  <span className="inline-flex items-center"><ListChecks className="mr-0.5 h-2.5 w-2.5 opacity-60" />{stats.saved} saved</span>
+                  {stats.late > 0 && (
+                    <>
+                      <span>·</span>
+                      <span className="text-destructive font-medium inline-flex items-center">{stats.late} late</span>
+                    </>
                   )}
                 </div>
-              );
-            })}
-          </div>
-        ) : pane === "QUEUE" ? (
-          <div className="space-y-1.5">
-            <p className="text-[10px] text-muted-foreground">{queue.length} customers still need a decision — worst first.</p>
-            {queue.slice(0, 60).map((l) => {
-              const lh = health(l);
-              return (
-                <div key={l.id} className={cn("rounded-md border p-2", l.id === lead?.id && "border-primary bg-primary/5")}>
-                  <div className="flex items-start justify-between gap-2">
-                    <button type="button" className="min-w-0 flex-1 text-left" onClick={() => { setLeadId(l.id); setPane("WORK"); }}>
-                      <p className="truncate text-xs font-medium">{l.name} <span className="font-normal text-muted-foreground">{l.phone}</span></p>
-                      <p className="truncate text-[10px] text-muted-foreground">{lh.stepNo}. {lh.step?.title ?? "Checked in"} · {l.owner ?? "no owner"} · {l.nextAction ?? "no next step"}</p>
+              )}
+            </div>
+            <div className="flex shrink-0 items-center gap-1">
+              {!panelOnly && (
+                <div className="flex items-center gap-0.5 rounded-md border px-1 py-0.5">
+                  <span className="text-[9px] text-muted-foreground">W</span>
+                  {WIDTH_PRESETS.map((p) => (
+                    <button key={p} type="button" onClick={() => setWidthPct(p)}
+                      className={cn("rounded px-1 text-[9px]", widthPct === p ? "bg-primary/15 text-primary" : "text-muted-foreground")}>
+                      {p}%
                     </button>
-                    <div className="flex shrink-0 items-center gap-1">
-                      {lh.sla === "LATE" && <Badge variant="destructive" className="text-[10px]">late</Badge>}
-                      <ContactActions phone={l.phone} name={l.name} compact />
+                  ))}
+                </div>
+              )}
+              <Button size="sm" variant={mode === "GUIDED" ? "default" : "outline"} className="h-6 px-2 text-[10px]" onClick={() => setMode("GUIDED")}>Understand</Button>
+              <Button size="sm" variant={mode === "EXPERT" ? "default" : "outline"} className="h-6 px-2 text-[10px]" onClick={() => setMode("EXPERT")}>Expert</Button>
+              <div className="relative">
+                <Button size="sm" variant="outline" className="h-6 px-2 text-[10px]" onClick={() => setMenuOpen((v) => !v)} aria-expanded={menuOpen} aria-label="Open app menu">
+                  <Menu className="h-3 w-3" />
+                </Button>
+                {menuOpen && (
+                  <>
+                    <button type="button" aria-label="Close menu" className="fixed inset-0 z-40 cursor-default" onClick={() => setMenuOpen(false)} />
+                    <div className="absolute right-0 z-50 mt-1 max-h-[70vh] w-56 overflow-y-auto rounded-md border bg-popover p-1 shadow-md">
+                      {(() => {
+                        let lastGroup = "";
+                        return MENU.map((m) => (
+                          <div key={m.to}>
+                            {m.group !== lastGroup && ((lastGroup = m.group), (<p className="px-2 pb-0.5 pt-1.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">{m.group}</p>))}
+                            <Link to={m.to} onClick={() => setMenuOpen(false)}
+                              className="block rounded-sm px-2 py-1 text-[11px] hover:bg-accent hover:text-accent-foreground">
+                              {m.label}
+                            </Link>
+                          </div>
+                        ));
+                      })()}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        </header>
+
+        {/* Customer line + accountability context */}
+        {lead && (
+          <div className="shrink-0 border-b px-3 py-1.5 bg-card/25">
+            <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold">{lead.name} <span className="text-[11px] font-normal text-muted-foreground">{lead.phone}</span></p>
+                {lead.lastMessage && <p className="truncate text-[10px] text-muted-foreground italic">“{lead.lastMessage}”</p>}
+              </div>
+              <div className="flex shrink-0 items-center gap-1">
+                <Button size="sm" variant="ghost" className="h-6 px-1.5 text-[10px] text-muted-foreground hover:text-foreground" onClick={nextCustomer} title="Next queued customer">
+                  Next<ArrowRight className="ml-1 h-3 w-3" />
+                </Button>
+              </div>
+            </div>
+            {mounted && h && (
+              <div className="mt-1 flex flex-wrap items-center gap-1 text-[10px]">
+                <Badge variant="outline" className="text-[10px] h-5">{h.stepNo}. {h.complete ? "Checked in" : h.step?.title}</Badge>
+                {lead.owner && <Badge variant="secondary" className="text-[10px] h-5 font-medium">Owner: {lead.owner}</Badge>}
+                <Badge variant="outline" className="text-[10px] text-muted-foreground h-5">waiting on {h.waitingOn}</Badge>
+                {lead.nextActionAt && (
+                  <Badge variant={h.sla === "LATE" ? "destructive" : "outline"} className="text-[10px] h-5 font-medium">
+                    {h.sla === "LATE" ? `late ${fmtMins(h.minutesLate)}` : `due ${new Date(lead.nextActionAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}
+                  </Badge>
+                )}
+                {lead.nextAction && <span className="text-[10px] text-muted-foreground hidden sm:inline ml-0.5 truncate max-w-[12rem]">{lead.nextAction}</span>}
+              </div>
+            )}
+            {/* Contact & quick actions */}
+            <div className="mt-1.5 flex flex-wrap items-center gap-1">
+              <ContactActions phone={lead.phone} name={lead.name} />
+              <Button size="sm" variant="outline" className="h-6 px-2 text-[10px]" onClick={() => setActivityOpen(true)}>
+                <Activity className="mr-1 h-3 w-3" />Log activity
+              </Button>
+              <Button size="sm" variant="outline" className="h-6 px-2 text-[10px]" onClick={async () => {
+                const at = new Date(Date.now() + 2 * 3_600_000).toISOString();
+                setNext(lead.id, "Follow up on decision", at);
+                setNextAction("Follow up on decision");
+                setDue(at.slice(0, 16));
+                const synced = await trySyncNextAction(lead.id, "Follow up on decision", at, lead.owner);
+                if (synced) toast.success("Follow-up set for 2 hours and synced");
+                else toast.success("Follow-up set for 2 hours locally");
+              }}>
+                <BellRing className="mr-1 h-3 w-3" />Follow
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* What is already filled — compact & collapsible by default */}
+        {lead && <KnownStrip lead={lead} />}
+
+        {/* Pane tabs */}
+        <div className="shrink-0 overflow-x-auto border-b px-3 py-1 bg-muted/5">
+          <div className="flex gap-1">
+            {PANES.map((p) => (
+              <button key={p.id} type="button" onClick={() => setPane(p.id)}
+                className={cn("shrink-0 rounded-md border px-2 py-0.5 text-[10px]",
+                  p.id === pane ? "border-primary bg-primary/10 text-primary font-medium" : "text-muted-foreground hover:text-foreground")}>
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Screen rail — 8 stages with clear completed / current / upcoming hierarchy */}
+        {lead && pane === "WORK" && (
+          <div className="shrink-0 overflow-x-auto border-b px-3 py-1 bg-muted/10">
+            <div className="flex gap-1 items-center">
+              {SCREENS.map((s, i) => {
+                const p = screenProgress(lead.f ?? {}, s);
+                const isCurrent = s.id === screen.id;
+                const isDone = p.done === p.total && p.total > 0;
+                return (
+                  <button
+                    key={s.id}
+                    type="button"
+                    onClick={() => setScreenId(s.id)}
+                    className={cn(
+                      "shrink-0 rounded-md border px-2 py-0.5 text-[10px] transition-colors flex items-center gap-1",
+                      isCurrent
+                        ? "border-primary bg-primary text-primary-foreground font-semibold shadow-xs"
+                        : isDone
+                          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 font-medium"
+                          : "border-dashed border-border/70 bg-transparent text-muted-foreground/75 hover:bg-accent/40 hover:text-foreground",
+                    )}
+                  >
+                    {isDone && !isCurrent && <Check className="h-2.5 w-2.5 text-emerald-600 dark:text-emerald-400" />}
+                    <span>{i + 1}. {s.title}</span>
+                    <span className={cn("text-[9px]", isCurrent ? "text-primary-foreground/80" : "opacity-70")}>
+                      {p.done}/{p.total}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* The only scrolling area */}
+        <main className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
+          {pane === "CLOSING" ? (
+            <ClosingDesk onOpenLead={(id) => { setLeadId(id); setPane("WORK"); }} />
+          ) : pane === "DRAFTS" ? (
+            <div className="space-y-2">
+              <p className="text-[10px] text-muted-foreground">Four drafts a day for {me} — D1, D2, D3, D4 · {BATCH_SIZE} customers each. Close a draft when all 30 have a next step and a deadline.</p>
+              {ROUNDS.map((r) => {
+                const batch = batches.find((b) => b.handler === me && b.round === r);
+                const rows = batch ? batch.leadIds.map((id) => leads.find((l) => l.id === id)).filter(Boolean) as typeof leads : [];
+                const done = rows.filter((l) => l.nextAction && l.nextActionAt).length;
+                return (
+                  <div key={r} className={cn("rounded-md border p-2", batch?.closedAt && "border-primary/40 bg-primary/5")}>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold">D{r} · {rows.length || BATCH_SIZE} customers</p>
+                        <p className="truncate text-[10px] text-muted-foreground">
+                          {!batch ? "Not opened yet" : batch.closedAt ? `Closed ${new Date(batch.closedAt).toLocaleString()}${batch.closeNote ? ` — ${batch.closeNote}` : ""}` : `${done}/${rows.length} have a next step and deadline`}
+                        </p>
+                      </div>
+                      <div className="flex shrink-0 gap-1">
+                        {!batch ? (
+                          <Button size="sm" className="h-7 px-2 text-[10px]" onClick={() => {
+                            const made = buildBatch(me, r);
+                            toast[made ? "success" : "error"](made ? `D${r} opened with ${made.leadIds.length} customers` : "No customers left to fill this draft");
+                          }}>Open D{r}</Button>
+                        ) : batch.closedAt ? (
+                          <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" onClick={() => { reopenBatch(batch.id); toast.success(`D${r} reopened`); }}>Reopen</Button>
+                        ) : (
+                          <Button size="sm" variant="secondary" className="h-7 px-2 text-[10px]" onClick={() => { setClosingId(batch.id); setCloseNote(""); }}>Close draft</Button>
+                        )}
+                      </div>
+                    </div>
+                    {batch && !batch.closedAt && rows.length > 0 && (
+                      <div className="mt-1.5 space-y-1">
+                        {rows.slice(0, 30).map((l) => (
+                          <button key={l.id} type="button" onClick={() => { setLeadId(l.id); setPane("WORK"); }}
+                            className={cn("flex w-full items-center justify-between gap-2 rounded border px-2 py-1 text-left", l.id === lead?.id && "border-primary bg-primary/5")}>
+                            <span className="truncate text-[11px]">{l.name}</span>
+                            <Badge variant={l.nextAction && l.nextActionAt ? "outline" : "destructive"} className="shrink-0 text-[9px]">
+                              {l.nextAction && l.nextActionAt ? "done" : "pending"}
+                            </Badge>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ) : pane === "QUEUE" ? (
+            <div className="space-y-1.5">
+              <p className="text-[10px] text-muted-foreground">{queue.length} customers still need a decision — worst first.</p>
+              {queue.slice(0, 60).map((l) => {
+                const lh = health(l);
+                return (
+                  <div key={l.id} className={cn("rounded-md border p-2", l.id === lead?.id && "border-primary bg-primary/5")}>
+                    <div className="flex items-start justify-between gap-2">
+                      <button type="button" className="min-w-0 flex-1 text-left" onClick={() => { setLeadId(l.id); setPane("WORK"); }}>
+                        <p className="truncate text-xs font-medium">{l.name} <span className="font-normal text-muted-foreground">{l.phone}</span></p>
+                        <p className="truncate text-[10px] text-muted-foreground">{lh.stepNo}. {lh.step?.title ?? "Checked in"} · {l.owner ?? "no owner"} · {l.nextAction ?? "no next step"}</p>
+                      </button>
+                      <div className="flex shrink-0 items-center gap-1">
+                        {lh.sla === "LATE" && <Badge variant="destructive" className="text-[10px]">late</Badge>}
+                        <ContactActions phone={l.phone} name={l.name} compact />
+                      </div>
                     </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        ) : !lead ? (
-          <p className="pt-10 text-center text-sm text-muted-foreground">Nothing left in the queue — every customer is closed or checked in.</p>
-        ) : pane === "WORK" ? (
-          <ScreenPanel
-            lead={lead}
-            screen={screen}
-            expert={mode === "EXPERT"}
-            canPrev={idx > 0}
-            canNext={idx < SCREENS.length - 1}
-            onPrev={() => step(-1)}
-            onNext={() => step(1)}
-          />
-        ) : pane === "MATCH" ? (
-          <PropertyMatch lead={lead} />
-        ) : pane === "LABELS" ? (
-          <LabelConsole lead={lead} />
-        ) : (
-          <CapturedPanel lead={lead} />
-        )}
-      </main>
-
-      {/* Action bar — always on screen */}
-      {lead && (
-        <footer className="shrink-0 border-t px-2 py-1">
-          <div className="flex items-center gap-1 overflow-x-auto">
-            <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" disabled={idx === 0} onClick={() => step(-1)}><ArrowLeft className="h-3 w-3" /></Button>
-            <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" disabled={idx >= SCREENS.length - 1} onClick={() => step(1)}><ArrowRight className="h-3 w-3" /></Button>
-            {!lead.owner && (
-              <Button size="sm" className="h-7 px-2 text-[10px]" onClick={() => { claim(lead.id); toast.success(`${lead.name} is yours, ${me}`); }}>
-                <UserCheck className="mr-1 h-3 w-3" />Own it
-              </Button>
-            )}
-            <CloseCommitButton leadId={lead.id} leadName={lead.name} leadPhone={lead.phone} actorName={me} size="xs" />
-            <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" onClick={() => { escalate(lead.id, "Operator asked for help"); toast.success("Control Tower notified"); }}>Tower</Button>
-            <select className="h-7 min-w-[8rem] flex-1 rounded-md border bg-background px-1 text-[10px]" value={nextAction} onChange={(e) => setNextAction(e.target.value)}>
-              {NEXT_ACTIONS.map((a) => <option key={a} value={a}>{a}</option>)}
-            </select>
-            <Input type="datetime-local" className="h-7 w-[8.8rem] shrink-0 text-[10px]" value={due} onChange={(e) => setDue(e.target.value)} />
-            <Button size="sm" variant="secondary" className="h-7 shrink-0 px-2 text-[10px]"
-              onClick={() => { setNext(lead.id, nextAction, new Date(due).toISOString()); toast.success("Next step and deadline locked"); }}>
-              Lock
-            </Button>
-          </div>
-        </footer>
-      )}
-
-      {lead && (
-        <Dialog open={activityOpen} onOpenChange={setActivityOpen}>
-          <DialogContent className="max-w-sm">
-            <DialogHeader>
-              <DialogTitle>Log activity · {lead.name}</DialogTitle>
-            </DialogHeader>
-            <div className="space-y-3">
-              <label className="block text-xs font-medium">
-                Activity
-                <select className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm" value={activityType} onChange={(e) => setActivityType(e.target.value)}>
-                  <option>Call completed</option>
-                  <option>WhatsApp message sent</option>
-                  <option>Customer replied</option>
-                  <option>Property options shared</option>
-                  <option>Tour discussed</option>
-                  <option>Internal note</option>
-                </select>
-              </label>
-              <label className="block text-xs font-medium">
-                What happened?
-                <Input className="mt-1" autoFocus placeholder="Outcome, promise, blocker or detail…" value={activityNote} onChange={(e) => setActivityNote(e.target.value)} onKeyDown={(e) => {
-                  if (e.key === "Enter" && activityNote.trim()) {
-                    logActivity(lead.id, activityType, activityNote);
-                    setActivityNote("");
-                    setActivityOpen(false);
-                    toast.success("Activity added to the customer story");
-                  }
-                }} />
-              </label>
+                );
+              })}
             </div>
+          ) : !lead ? (
+            <p className="pt-10 text-center text-sm text-muted-foreground">Nothing left in the queue — every customer is closed or checked in.</p>
+          ) : pane === "WORK" ? (
+            <ScreenPanel
+              lead={lead}
+              screen={screen}
+              expert={mode === "EXPERT"}
+              canPrev={idx > 0}
+              canNext={idx < SCREENS.length - 1}
+              onPrev={() => step(-1)}
+              onNext={() => step(1)}
+              onNextCustomer={nextCustomer}
+            />
+          ) : pane === "MATCH" ? (
+            <PropertyMatch lead={lead} />
+          ) : pane === "LABELS" ? (
+            <LabelConsole lead={lead} />
+          ) : (
+            <CapturedPanel lead={lead} />
+          )}
+        </main>
+
+        {/* Action bar — always on screen */}
+        {lead && (
+          <footer className="shrink-0 border-t px-2 py-1">
+            <div className="flex items-center gap-1 overflow-x-auto">
+              <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" disabled={idx === 0} onClick={() => step(-1)}><ArrowLeft className="h-3 w-3" /></Button>
+              <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" disabled={idx >= SCREENS.length - 1} onClick={() => step(1)}><ArrowRight className="h-3 w-3" /></Button>
+              {!lead.owner && (
+                <Button size="sm" className="h-7 px-2 text-[10px]" onClick={() => { claim(lead.id); toast.success(`${lead.name} is yours, ${me}`); }}>
+                  <UserCheck className="mr-1 h-3 w-3" />Own it
+                </Button>
+              )}
+              <CloseCommitButton leadId={lead.id} leadName={lead.name} leadPhone={lead.phone} actorName={me} size="xs" />
+              <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" onClick={() => { escalate(lead.id, "Operator asked for help"); toast.success("Control Tower notified"); }}>Tower</Button>
+              <select className="h-7 min-w-[8rem] flex-1 rounded-md border bg-background px-1 text-[10px]" value={nextAction} onChange={(e) => setNextAction(e.target.value)}>
+                {NEXT_ACTIONS.map((a) => <option key={a} value={a}>{a}</option>)}
+              </select>
+              <Input type="datetime-local" className="h-7 w-[8.8rem] shrink-0 text-[10px]" value={due} onChange={(e) => setDue(e.target.value)} />
+              <Button size="sm" variant="secondary" className="h-7 shrink-0 px-2 text-[10px]"
+                onClick={async () => { 
+                  const isoDue = new Date(due).toISOString();
+                  setNext(lead.id, nextAction, isoDue);
+                  const synced = await trySyncNextAction(lead.id, nextAction, isoDue, lead.owner);
+                  if (synced) toast.success("Next step locked and synced");
+                  else toast.success("Next step locked locally (sync pending)");
+                }}>
+                Lock
+              </Button>
+            </div>
+          </footer>
+        )}
+
+        {lead && (
+          <Dialog open={activityOpen} onOpenChange={setActivityOpen}>
+            <DialogContent className="max-w-sm">
+              <DialogHeader>
+                <DialogTitle>Log activity · {lead.name}</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-3">
+                <label className="block text-xs font-medium">
+                  Activity
+                  <select className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm" value={activityType} onChange={(e) => setActivityType(e.target.value)}>
+                    <option>Call completed</option>
+                    <option>WhatsApp message sent</option>
+                    <option>Customer replied</option>
+                    <option>Property options shared</option>
+                    <option>Tour discussed</option>
+                    <option>Internal note</option>
+                  </select>
+                </label>
+                <label className="block text-xs font-medium">
+                  What happened?
+                  <Input className="mt-1" autoFocus placeholder="Outcome, promise, blocker or detail…" value={activityNote} onChange={(e) => setActivityNote(e.target.value)} onKeyDown={(e) => {
+                    if (e.key === "Enter" && activityNote.trim()) {
+                      logActivity(lead.id, activityType, activityNote);
+                      setActivityNote("");
+                      setActivityOpen(false);
+                      toast.success("Activity added to the customer story");
+                    }
+                  }} />
+                </label>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setActivityOpen(false)}>Cancel</Button>
+                <Button disabled={!activityNote.trim()} onClick={() => {
+                  logActivity(lead.id, activityType, activityNote);
+                  setActivityNote("");
+                  setActivityOpen(false);
+                  toast.success("Activity added to the customer story");
+                }}>Save activity</Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        )}
+
+        <Dialog open={!!closingId} onOpenChange={(o) => !o && setClosingId(null)}>
+          <DialogContent className="max-w-sm">
+            <DialogHeader><DialogTitle>Close this draft</DialogTitle></DialogHeader>
+            <label className="block text-xs font-medium">
+              What happened in this draft?
+              <Input className="mt-1" autoFocus placeholder="30 customers worked, 6 tours set…" value={closeNote} onChange={(e) => setCloseNote(e.target.value)} />
+            </label>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setActivityOpen(false)}>Cancel</Button>
-              <Button disabled={!activityNote.trim()} onClick={() => {
-                logActivity(lead.id, activityType, activityNote);
-                setActivityNote("");
-                setActivityOpen(false);
-                toast.success("Activity added to the customer story");
-              }}>Save activity</Button>
+              <Button variant="outline" onClick={() => setClosingId(null)}>Cancel</Button>
+              <Button onClick={() => { if (closingId) closeBatch(closingId, closeNote); setClosingId(null); toast.success("Draft closed"); }}>Close draft</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
-      )}
-
-      <Dialog open={!!closingId} onOpenChange={(o) => !o && setClosingId(null)}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader><DialogTitle>Close this draft</DialogTitle></DialogHeader>
-          <label className="block text-xs font-medium">
-            What happened in this draft?
-            <Input className="mt-1" autoFocus placeholder="30 customers worked, 6 tours set…" value={closeNote} onChange={(e) => setCloseNote(e.target.value)} />
-          </label>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setClosingId(null)}>Cancel</Button>
-            <Button onClick={() => { if (closingId) closeBatch(closingId, closeNote); setClosingId(null); toast.success("Draft closed"); }}>Close draft</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
+      </div>
 
 
       {/* Drag this edge to set the panel width, exactly like a sheet column */}
@@ -485,12 +524,32 @@ export function SplitFlow({ embedded = false, focus, panelOnly = false }: { embe
             role="separator"
             aria-label="Drag to resize the panel"
             onPointerDown={() => setDragging(true)}
-            className={cn("w-1.5 shrink-0 cursor-col-resize bg-border transition-colors hover:bg-primary", dragging && "bg-primary")}
+            className={cn("w-1.5 shrink-0 cursor-col-resize bg-border transition-colors hover:bg-primary hidden md:block", dragging && "bg-primary")}
           />
-          <div className="flex min-w-0 flex-1 items-center justify-center bg-muted/30 p-4 text-center">
-            <p className="text-[11px] text-muted-foreground">
-              Keep WhatsApp Web open in this space.<br />Drag the grey bar, or use the width buttons, to set the sizes you want.
-            </p>
+          <div className="hidden md:flex min-w-[280px] flex-1 flex-col overflow-hidden bg-muted/10 border-l">
+            <div className="shrink-0 border-b px-3 py-1.5 bg-card/40 flex items-center justify-between">
+              <span className="text-[11px] font-semibold text-foreground">Customer Context</span>
+              <span className="text-[10px] text-muted-foreground">Live Context Rail</span>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {lead ? (
+                <div className="max-w-md mx-auto py-1">
+                  <CustomerContextRail
+                    lead={lead}
+                    nextAction={nextAction}
+                    setNextAction={setNextAction}
+                    due={due}
+                    setDue={setDue}
+                    onLogActivity={() => setActivityOpen(true)}
+                    onViewAllActivity={() => setPane("CAPTURED")}
+                  />
+                </div>
+              ) : (
+                <div className="flex h-full items-center justify-center p-4 text-center text-muted-foreground text-xs">
+                  Select a customer to view context
+                </div>
+              )}
+            </div>
           </div>
         </>
       )}

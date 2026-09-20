@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Link } from "@tanstack/react-router";
 import { useBookingFlow } from "@/bookingflow/store";
@@ -10,10 +10,11 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import {
   AlertTriangle, CheckCircle2, Clock, History, Target, TrendingUp, XCircle,
-  Copy, Search, Flame, ClipboardList, ArrowRightCircle,
+  Copy, Search, Flame, ClipboardList, ArrowRightCircle, ClipboardCopy, ExternalLink, ShieldCheck, Keyboard,
 } from "lucide-react";
 import { HowButton } from "@/components/common/HowButton";
 import { WINDOW_BY_ID, TONE_STYLE } from "@/lib/commitments/windows";
@@ -23,6 +24,8 @@ import {
 } from "@/lib/commitments/store";
 import { atRisk, boardDigest, groupByUrgency, ownersOf, riskFlags } from "@/lib/commitments/insights";
 import { NotClosedDialog } from "./NotClosedDialog";
+import { generateClosingMessage } from "@/lib/commitments/closingDebrief";
+import { isValidUUID, trySyncAuditLog, trySyncNextAction } from "@/lib/backend-safety";
 
 type Bucket = "today" | "overdue" | "open" | "settled";
 
@@ -85,8 +88,94 @@ export function ClosingBoard() {
     }
   };
 
+  // Global power shortcuts on /closing
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const isTyping = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
+      if (isTyping || e.metaKey || e.ctrlKey || e.altKey) return;
+
+      const firstOpen = list.find((c) => c.status === "open");
+      if (!firstOpen) return;
+
+      if (e.key === "c" || e.key === "C") {
+        e.preventDefault();
+        markKept(firstOpen.id, firstOpen.promisedBy);
+        if (isValidUUID(firstOpen.leadId)) {
+          void trySyncAuditLog("close_commitment", firstOpen.leadId, "closing.kept", { status: "open" }, { status: "kept" });
+        }
+        toast.success(`${firstOpen.leadName} marked closed (Shortcut C)`);
+      } else if (e.key === "3") {
+        e.preventDefault();
+        const updated = promiseClose({
+          leadId: firstOpen.leadId, leadName: firstOpen.leadName, leadPhone: firstOpen.leadPhone,
+          windowId: "3h", steps: firstOpen.steps, note: firstOpen.note, by: firstOpen.promisedBy,
+        });
+        if (isValidUUID(firstOpen.leadId)) {
+          void trySyncAuditLog("close_commitment", firstOpen.leadId, "closing.moved", { dueAt: firstOpen.dueAt }, { dueAt: updated.dueAt });
+        }
+        toast.success(`${firstOpen.leadName} re-promised +3h (Shortcut 3)`);
+      } else if (e.key === "4") {
+        e.preventDefault();
+        const updated = promiseClose({
+          leadId: firstOpen.leadId, leadName: firstOpen.leadName, leadPhone: firstOpen.leadPhone,
+          windowId: "24h", steps: firstOpen.steps, note: firstOpen.note, by: firstOpen.promisedBy,
+        });
+        if (isValidUUID(firstOpen.leadId)) {
+          void trySyncAuditLog("close_commitment", firstOpen.leadId, "closing.moved", { dueAt: firstOpen.dueAt }, { dueAt: updated.dueAt });
+        }
+        toast.success(`${firstOpen.leadName} re-promised +24h (Shortcut 4)`);
+      } else if (e.key === "y" || e.key === "Y") {
+        e.preventDefault();
+        const msg = generateClosingMessage(firstOpen);
+        void navigator.clipboard.writeText(msg);
+        toast.success(`Copied update for ${firstOpen.leadName} (Shortcut Y)`);
+      } else if (e.key === "w" || e.key === "W") {
+        e.preventDefault();
+        const cleanPhone = firstOpen.leadPhone?.replace(/[^0-9]/g, "") ?? "";
+        if (cleanPhone) {
+          const msg = generateClosingMessage(firstOpen);
+          const url = `https://wa.me/${cleanPhone.length === 10 ? `91${cleanPhone}` : cleanPhone}?text=${encodeURIComponent(msg)}`;
+          window.open(url, "_blank", "noreferrer");
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [list]);
+
   return (
     <div className="space-y-4">
+      {/* ── 1. OUTCOME DIRECTIVE BANNER ── */}
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-primary/30 bg-primary/5 p-3 text-xs">
+        <div className="flex items-center gap-2">
+          <Target className="h-4 w-4 text-primary shrink-0" />
+          <div>
+            <p className="font-semibold text-foreground">
+              Deliver today's closing commitments: settle promises and prevent payment intent from slipping.
+            </p>
+            <p className="text-[11px] text-muted-foreground">
+              Resolve overdue promises first, act on commitments due soon, and follow up with factual customer updates.
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5 text-[11px] font-medium">
+          {stats.expired > 0 && (
+            <span className="rounded-full border border-destructive/40 bg-destructive/10 px-2 py-0.5 text-destructive font-semibold">
+              {stats.expired} overdue
+            </span>
+          )}
+          <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-primary font-semibold">
+            {stats.today} due today
+          </span>
+          <span className="rounded-full border border-border bg-muted/60 px-2 py-0.5 text-muted-foreground">
+            {stats.open} open
+          </span>
+          <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-emerald-600 font-semibold">
+            {stats.keptToday} kept today
+          </span>
+        </div>
+      </div>
+
       {/* KPI strip */}
       <div className="grid grid-cols-2 gap-2 md:grid-cols-6">
         <Stat label="Closing today" value={stats.today} icon={<Target className="h-3 w-3" />} tone="primary" />
@@ -176,6 +265,48 @@ export function ClosingBoard() {
             ]}
             doneWhen="Today's bucket is empty and every row was settled kept, broken, or re-promised."
           />
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="ghost" size="sm" className="h-7 gap-1 text-[11px] text-muted-foreground hover:text-foreground">
+                <Keyboard className="h-3 w-3 text-primary" /> Shortcuts
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-64 p-3 text-xs space-y-2">
+              <div className="font-semibold text-foreground flex items-center gap-1.5 text-xs">
+                <Keyboard className="h-3.5 w-3.5 text-primary" /> Power Shortcuts
+              </div>
+              <div className="space-y-1.5 text-muted-foreground text-[11px]">
+                <div className="flex justify-between items-center">
+                  <span>Mark It Closed</span>
+                  <kbd className="font-mono bg-muted px-1.5 py-0.5 rounded border border-border text-foreground font-semibold">C</kbd>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span>Re-promise +3h</span>
+                  <kbd className="font-mono bg-muted px-1.5 py-0.5 rounded border border-border text-foreground font-semibold">3</kbd>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span>Re-promise +24h</span>
+                  <kbd className="font-mono bg-muted px-1.5 py-0.5 rounded border border-border text-foreground font-semibold">4</kbd>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span>Copy WhatsApp update</span>
+                  <kbd className="font-mono bg-muted px-1.5 py-0.5 rounded border border-border text-foreground font-semibold">Y</kbd>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span>Open WhatsApp</span>
+                  <kbd className="font-mono bg-muted px-1.5 py-0.5 rounded border border-border text-foreground font-semibold">W</kbd>
+                </div>
+                <div className="flex justify-between items-center pt-1 border-t border-border/60">
+                  <span>Commit modal quick pick</span>
+                  <kbd className="font-mono bg-muted px-1.5 py-0.5 rounded border border-border text-foreground font-semibold">1–5</kbd>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span>Commit modal save</span>
+                  <kbd className="font-mono bg-muted px-1.5 py-0.5 rounded border border-border text-foreground font-semibold">⌘↵</kbd>
+                </div>
+              </div>
+            </PopoverContent>
+          </Popover>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           <div className="relative">
@@ -301,51 +432,147 @@ function Row({ c, now }: { c: CloseCommitment; now: number }) {
   const overdue = isExpired(c, now);
   const flags = riskFlags(c, now);
   const [showHistory, setShowHistory] = useState(false);
+  const [isActing, setIsActing] = useState(false);
 
-  const pushTo = (windowId: "3h" | "24h" | "48h") => {
-    promiseClose({
-      leadId: c.leadId, leadName: c.leadName, leadPhone: c.leadPhone,
-      windowId, steps: c.steps, note: c.note, by: c.promisedBy,
-    });
-    toast.success(`${c.leadName} re-promised — ${WINDOW_BY_ID[windowId].short}`, {
-      description: "The old deadline stays in the history.",
-    });
+  const customerMessage = useMemo(() => generateClosingMessage(c), [c]);
+
+  const handleCopyMessage = async () => {
+    try {
+      await navigator.clipboard.writeText(customerMessage);
+      toast.success("Customer follow-up copied to clipboard!", {
+        description: "Open WhatsApp to paste and send when ready.",
+      });
+    } catch {
+      toast.error("Could not copy to clipboard.");
+    }
   };
 
+  const handleMarkKept = async () => {
+    if (isActing) return;
+    setIsActing(true);
+    try {
+      markKept(c.id, c.promisedBy);
+      if (isValidUUID(c.leadId)) {
+        void trySyncAuditLog(
+          "close_commitment",
+          c.leadId,
+          "closing.kept",
+          { status: "open", commitmentId: c.id, dueAt: c.dueAt },
+          { status: "kept", commitmentId: c.id, closedAt: new Date().toISOString() },
+          "Closing commitment marked kept"
+        );
+      }
+      toast.success(`${c.leadName} marked closed`);
+    } finally {
+      setIsActing(false);
+    }
+  };
+
+  const pushTo = async (windowId: "3h" | "24h" | "48h") => {
+    if (isActing) return;
+    setIsActing(true);
+    try {
+      const updated = promiseClose({
+        leadId: c.leadId, leadName: c.leadName, leadPhone: c.leadPhone,
+        windowId, steps: c.steps, note: c.note, by: c.promisedBy,
+      });
+      if (isValidUUID(c.leadId)) {
+        void trySyncAuditLog(
+          "close_commitment",
+          c.leadId,
+          "closing.moved",
+          { dueAt: c.dueAt, changeCount: c.changeCount, windowId: c.windowId },
+          { dueAt: updated.dueAt, changeCount: updated.changeCount, windowId },
+          `Deadline moved +${windowId}`
+        );
+        void trySyncNextAction(c.leadId, "collect-payment", updated.dueAt, null);
+      }
+      toast.success(`${c.leadName} re-promised — ${WINDOW_BY_ID[windowId].short}`, {
+        description: "The old deadline stays in the history.",
+      });
+    } finally {
+      setIsActing(false);
+    }
+  };
+
+  const cleanPhone = c.leadPhone?.replace(/[^0-9]/g, "") ?? "";
+  const waUrl = cleanPhone ? `https://wa.me/${cleanPhone.length === 10 ? `91${cleanPhone}` : cleanPhone}?text=${encodeURIComponent(customerMessage)}` : "";
+
   return (
-    <Card className={cn("p-3", overdue && "border-destructive/50 bg-destructive/5", c.status === "kept" && "border-emerald-500/40")}>
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0">
+    <Card className={cn("p-3.5 transition-all shadow-xs", overdue && "border-destructive/60 bg-destructive/5 ring-1 ring-destructive/20", c.status === "kept" && "border-emerald-500/40 bg-emerald-500/5")}>
+      <div className="flex flex-wrap items-start justify-between gap-2.5">
+        <div className="min-w-0 flex-1">
+          {/* WHO & STATUS LINE */}
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-sm font-semibold">{c.leadName}</span>
-            <Badge variant="outline" className={cn("text-[10px]", TONE_STYLE[def?.tone ?? "week"])}>
+            <span className="text-sm font-bold text-foreground">{c.leadName}</span>
+            <Badge variant="outline" className={cn("text-[10px] font-semibold", TONE_STYLE[def?.tone ?? "week"])}>
               {def?.short ?? c.windowId}
             </Badge>
-            <span className={cn("text-[10px] font-medium", overdue ? "text-destructive" : "text-muted-foreground")}>
-              {c.status === "open" ? countdown(left) : c.status}
-            </span>
-            {c.changeCount > 0 && <Badge variant="secondary" className="text-[10px]">moved {c.changeCount}×</Badge>}
-            {c.status === "kept" && <Badge className="bg-emerald-500/15 text-[10px] text-emerald-600">closed</Badge>}
+
+            {/* Overdue vs Due In Indicator */}
+            {c.status === "open" ? (
+              overdue ? (
+                <Badge variant="destructive" className="gap-1 text-[10px] font-bold uppercase tracking-wider">
+                  <AlertTriangle className="h-3 w-3" /> Late {Math.abs(Math.round(left))}h
+                </Badge>
+              ) : (
+                <Badge variant="outline" className="border-primary/40 bg-primary/10 text-[10px] font-semibold text-primary">
+                  <Clock className="h-3 w-3 mr-0.5" /> {countdown(left)}
+                </Badge>
+              )
+            ) : (
+              <Badge variant={c.status === "kept" ? "default" : "secondary"} className={cn("text-[10px] uppercase font-semibold", c.status === "kept" && "bg-emerald-600 hover:bg-emerald-700")}>
+                {c.status === "kept" ? "Closed" : c.status}
+              </Badge>
+            )}
+
+            {c.changeCount > 0 && (
+              <Badge variant="secondary" className="text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                moved {c.changeCount}×
+              </Badge>
+            )}
+
+            {/* Backend Sync Indicator */}
+            {isValidUUID(c.leadId) ? (
+              <span className="inline-flex items-center gap-0.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-medium text-emerald-600" title="Synchronized with cloud CRM">
+                <ShieldCheck className="h-2.5 w-2.5" /> Synced
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-0.5 rounded-full border border-border bg-muted/50 px-1.5 py-0.5 text-[9px] text-muted-foreground" title="Saved locally — sync pending">
+                Local
+              </span>
+            )}
           </div>
-          <p className="mt-0.5 text-[11px] text-muted-foreground">due {fmt(c.dueAt)} · {c.promisedBy}</p>
-          {c.leadPhone && (
-            <div className="mt-1 flex items-center gap-1.5">
-              <span className="text-[11px] tabular-nums text-muted-foreground">{c.leadPhone}</span>
-              <ContactActions compact phone={c.leadPhone} name={c.leadName} />
+
+          {/* WHEN & OWNER DETAILS */}
+          <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11px] text-muted-foreground">
+            <span><strong>Due:</strong> {fmt(c.dueAt)}</span>
+            <span>·</span>
+            <span><strong>Owner:</strong> <span className="font-medium text-foreground">{c.promisedBy}</span></span>
+            {c.leadPhone && (
+              <>
+                <span>·</span>
+                <span className="tabular-nums">{c.leadPhone}</span>
+                <ContactActions compact phone={c.leadPhone} name={c.leadName} />
+              </>
+            )}
+          </div>
+
+          {/* WHAT: EXECUTION STEPS */}
+          {c.steps?.length > 0 && (
+            <div className="mt-1.5 flex flex-wrap items-center gap-1">
+              <span className="text-[10px] font-semibold uppercase text-muted-foreground mr-1">Steps:</span>
+              {c.steps.map((s) => (
+                <span key={s} className="rounded-md border border-border bg-muted/60 px-1.5 py-0.5 text-[10px] font-medium text-foreground">
+                  {s}
+                </span>
+              ))}
             </div>
           )}
 
-          {c.steps?.length > 0 && (
-            <ul className="mt-1 flex flex-wrap gap-1">
-              {c.steps.map((s) => (
-                <li key={s} className="rounded-full border border-border bg-muted/50 px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                  {s}
-                </li>
-              ))}
-            </ul>
-          )}
+          {/* RISK FLAGS */}
           {flags.length > 0 && (
-            <div className="mt-1 flex flex-wrap gap-1">
+            <div className="mt-1.5 flex flex-wrap gap-1">
               {flags.map((f) => (
                 <span key={f} className="rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">
                   {f}
@@ -353,40 +580,117 @@ function Row({ c, now }: { c: CloseCommitment; now: number }) {
               ))}
             </div>
           )}
-          {c.problem && <p className="mt-0.5 text-[11px] font-medium text-destructive">Did not close — {c.problem}</p>}
-          {c.note && <p className="mt-0.5 text-[11px] text-foreground/80">Plan: {c.note}</p>}
+
+          {c.problem && <p className="mt-1 text-[11px] font-medium text-destructive">Did not close — {c.problem}</p>}
+          {c.note && <p className="mt-1 text-[11px] text-foreground/80">Plan note: {c.note}</p>}
         </div>
 
-        <div className="flex flex-wrap items-center gap-1">
+        {/* WHAT NEXT: ACTIONS */}
+        <div className="flex flex-wrap items-center gap-1.5 self-start">
           {c.status === "open" && (
             <>
-              <Button size="sm" variant="outline" className="h-7 gap-1 text-[11px] text-emerald-600" onClick={() => markKept(c.id, c.promisedBy)}>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={isActing}
+                className="h-7 gap-1 text-[11px] font-semibold border-emerald-500/50 text-emerald-600 hover:bg-emerald-500/10"
+                onClick={handleMarkKept}
+                title="Mark It Closed (Shortcut: C)"
+              >
                 <CheckCircle2 className="h-3 w-3" /> It closed
+                <kbd className="ml-1 text-[9px] font-mono px-1 rounded bg-emerald-500/15 border border-emerald-500/30">C</kbd>
               </Button>
-              <NotClosedDialog commitmentId={c.id} leadName={c.leadName} actorName={c.promisedBy} />
-              <Button size="sm" variant="ghost" className="h-7 gap-1 text-[11px]" onClick={() => pushTo("3h")} title="Re-promise into the next 3 hours">
-                <ArrowRightCircle className="h-3 w-3" /> +3h
+              <NotClosedDialog commitmentId={c.id} leadName={c.leadName} actorName={c.promisedBy} leadId={c.leadId} />
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={isActing}
+                className="h-7 gap-0.5 text-[11px] hover:bg-muted font-medium"
+                onClick={() => pushTo("3h")}
+                title="Re-promise into the next 3 hours (Shortcut: 3)"
+              >
+                <ArrowRightCircle className="h-3 w-3 text-primary" /> +3h
+                <kbd className="ml-1 text-[9px] font-mono px-1 rounded bg-muted border border-border">3</kbd>
               </Button>
-              <Button size="sm" variant="ghost" className="h-7 text-[11px]" onClick={() => pushTo("24h")} title="Re-promise into tomorrow">
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={isActing}
+                className="h-7 text-[11px] hover:bg-muted font-medium"
+                onClick={() => pushTo("24h")}
+                title="Re-promise into tomorrow (Shortcut: 4)"
+              >
                 +24h
+                <kbd className="ml-1 text-[9px] font-mono px-1 rounded bg-muted border border-border">4</kbd>
               </Button>
             </>
           )}
-          <Button size="sm" variant="ghost" className="h-7 gap-1 text-[11px]" onClick={() => setShowHistory((v) => !v)}>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 gap-1 text-[11px]"
+            onClick={() => setShowHistory((v) => !v)}
+          >
             <History className="h-3 w-3" /> History
           </Button>
         </div>
       </div>
 
+      {/* FACTUAL CUSTOMER WHATSAPP FOLLOW-UP AREA */}
+      <div className="mt-2.5 rounded-md border bg-muted/20 p-2 text-xs">
+        <div className="flex flex-wrap items-center justify-between gap-1 text-[10px] font-semibold uppercase text-muted-foreground">
+          <span>Customer WhatsApp Follow-up</span>
+          <div className="flex items-center gap-2">
+            {waUrl && (
+              <a
+                href={waUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center gap-1 text-primary hover:underline font-semibold lowercase first-letter:uppercase"
+                title="Open in WhatsApp (Shortcut: W)"
+              >
+                <ExternalLink className="h-3 w-3" /> Open in WhatsApp
+                <kbd className="text-[9px] font-mono px-1 rounded bg-primary/10 border border-primary/30 text-primary">W</kbd>
+              </a>
+            )}
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-5 px-1.5 text-[10px] text-primary"
+              onClick={handleCopyMessage}
+              title="Copy update (Shortcut: Y)"
+            >
+              <ClipboardCopy className="h-2.5 w-2.5 mr-1" /> Copy update
+              <kbd className="ml-1 text-[9px] font-mono px-1 rounded bg-muted border border-border">Y</kbd>
+            </Button>
+          </div>
+        </div>
+        <p className="mt-1 text-[11px] leading-relaxed text-foreground/90 italic">
+          "{customerMessage}"
+        </p>
+      </div>
+
+      {/* DETAILED AUDIT HISTORY */}
       {showHistory && (
-        <div className="mt-2 space-y-1 border-t border-border pt-2">
+        <div className="mt-2.5 space-y-1.5 border-t border-border pt-2 text-[11px]">
+          <p className="font-semibold text-[10px] uppercase text-muted-foreground tracking-wider">
+            Audit History ({c.history.length} event{c.history.length === 1 ? "" : "s"})
+          </p>
           {c.history.map((e, i) => (
-            <p key={i} className="text-[11px] leading-relaxed text-muted-foreground">
-              <span className="font-medium text-foreground">{fmt(e.at)}</span> · {e.by} · {e.kind}
-              {e.dueAt && ` → due ${fmt(e.dueAt)}`}
-              {e.prevDueAt && ` (was ${fmt(e.prevDueAt)})`}
-              {(e.reason || e.note) && ` · ${e.reason ?? e.note}`}
-            </p>
+            <div key={i} className="rounded-md border bg-background/50 p-1.5 text-muted-foreground">
+              <div className="flex items-center justify-between text-[10px]">
+                <span className="font-semibold text-foreground uppercase">{e.kind}</span>
+                <span>{fmt(e.at)} · by <strong className="text-foreground">{e.by}</strong></span>
+              </div>
+              {e.prevDueAt && (
+                <p className="mt-0.5 text-[10px]">
+                  Deadline changed: <span className="line-through">{fmt(e.prevDueAt)}</span> → <span className="font-semibold text-foreground">{e.dueAt ? fmt(e.dueAt) : "—"}</span>
+                </p>
+              )}
+              {e.reason && <p className="mt-0.5 text-[10px] text-foreground font-medium">Why: {e.reason}</p>}
+              {e.note && <p className="mt-0.5 text-[10px] text-foreground">Note: {e.note}</p>}
+              {e.problem && <p className="mt-0.5 text-[10px] font-medium text-destructive">Problem: {e.problem}</p>}
+            </div>
           ))}
         </div>
       )}

@@ -27,6 +27,7 @@ import { LiveActivityDock } from "./live/LiveActivityDock";
 import { useIdentityStore } from "@/lib/lead-identity/store";
 import { useActivityTracker } from "@/lib/productivity/use-activity-tracker";
 import { runLifecycleSeed } from "@/lib/pipeline/seed-lifecycle";
+import { FounderBriefModal } from "./FounderBriefModal";
 
 function PipRouteSyncBridge() {
   const { active } = usePip();
@@ -116,7 +117,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       { to: "/tower/review", label: "Chat & Call Review OS", icon: ClipboardCheck, accent: true },
       { to: "/l1", label: "L1 Review", icon: ClipboardCheck, accent: true },
       { to: "/labels", label: "Label Console", icon: ClipboardCheck, accent: true },
-      { to: "/closing", label: "Closing Board", icon: Target, accent: true },
+      { to: "/closing", label: "Closing Desk", icon: Target, accent: true },
       { to: "/academy", label: "Academy", icon: ClipboardCheck },
       { to: "/supply-hub", label: "Supply Hub", icon: Layers, accent: true },
       { to: "/supply-hub/match", label: "Lead Matcher", icon: Sparkles },
@@ -186,7 +187,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       { to: "/tower/review", label: "Chat & Call Review OS", icon: ClipboardCheck, accent: true },
       { to: "/l1", label: "L1 Review", icon: ClipboardCheck, accent: true },
       { to: "/labels", label: "Label Console", icon: ClipboardCheck, accent: true },
-      { to: "/closing", label: "Closing Board", icon: Target, accent: true },
+      { to: "/closing", label: "Closing Desk", icon: Target, accent: true },
       { to: "/academy", label: "Academy", icon: ClipboardCheck },
       { to: "/myt/leads", label: "MYT Leads", icon: Target },
       { to: "/myt/schedule", label: "Schedule Tour", icon: CalendarPlus },
@@ -230,7 +231,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       { to: "/tower/review", label: "Chat & Call Review OS", icon: ClipboardCheck, accent: true },
       { to: "/l1", label: "L1 Review", icon: ClipboardCheck, accent: true },
       { to: "/labels", label: "Label Console", icon: ClipboardCheck, accent: true },
-      { to: "/closing", label: "Closing Board", icon: Target, accent: true },
+      { to: "/closing", label: "Closing Desk", icon: Target, accent: true },
       { to: "/academy", label: "Academy", icon: ClipboardCheck },
       { to: "/myt/marketplace", label: "Marketplace", icon: Store },
       { to: "/myt/my-leads", label: "My Leads", icon: Target },
@@ -331,29 +332,48 @@ export function AppShell({ children }: { children: ReactNode }) {
           {items.map((it) => {
             const Icon = it.icon;
             const active = isActive(it.to);
+            const isChanged = it.to === "/booking-flow-split" || it.to === "/movement-care" || it.to === "/closing";
+
             return (
               <Link
                 key={`${it.to}-${it.label}`}
                 to={it.to}
                 className={cn(
-                  "flex items-center gap-2.5 px-3 py-2 rounded-md text-[13px] transition-colors",
-                  active
-                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                    : "hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground",
-                  it.accent && !active && "text-accent",
+                  "flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[12.5px] transition-colors relative",
+                  isChanged
+                    ? active
+                      ? "bg-emerald-600 text-white font-semibold shadow-sm"
+                      : "text-emerald-400 bg-emerald-500/15 border border-emerald-500/35 hover:bg-emerald-500/25 hover:text-emerald-300 font-medium"
+                    : active
+                      ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                      : "hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground",
+                  !isChanged && it.accent && !active && "text-accent",
                 )}
               >
-                <Icon className="h-4 w-4" />
-                <span>{it.label}</span>
-                {it.badge !== undefined && it.badge > 0 && mounted && (
-                  <span className={cn(
-                    "ml-auto text-[10px] rounded-full px-1.5 py-0.5 font-mono",
-                    it.accent
-                      ? "bg-accent text-accent-foreground"
-                      : "bg-destructive text-destructive-foreground",
-                  )}>
-                    {it.badge}
+                <Icon className={cn("h-4 w-4 shrink-0", isChanged && !active && "text-emerald-400")} />
+                <span className="truncate leading-tight">{it.label}</span>
+                {isChanged ? (
+                  <span
+                    className={cn(
+                      "ml-auto text-[8px] font-mono font-bold tracking-tight uppercase px-1 py-0.5 rounded leading-none border shrink-0",
+                      active
+                        ? "bg-white/20 text-white border-white/30"
+                        : "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+                    )}
+                  >
+                    CHANGED
                   </span>
+                ) : (
+                  it.badge !== undefined && it.badge > 0 && mounted && (
+                    <span className={cn(
+                      "ml-auto text-[10px] rounded-full px-1.5 py-0.5 font-mono",
+                      it.accent
+                        ? "bg-accent text-accent-foreground"
+                        : "bg-destructive text-destructive-foreground",
+                    )}>
+                      {it.badge}
+                    </span>
+                  )
                 )}
               </Link>
             );
@@ -416,6 +436,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             </kbd>
           </button>
           <div className="ml-auto flex items-center gap-2">
+            <FounderBriefModal />
             <LiveActivityDock />
             <PipButton />
             <NotificationCenter role={role} />

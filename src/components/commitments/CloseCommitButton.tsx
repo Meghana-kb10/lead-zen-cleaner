@@ -11,6 +11,7 @@ import { HowButton } from "@/components/common/HowButton";
 import { CLOSE_WINDOWS, WINDOW_BY_ID, TONE_STYLE, CLOSE_STEPS, type CloseWindowId } from "@/lib/commitments/windows";
 import { promiseStrength, riskFlags } from "@/lib/commitments/insights";
 import { NotClosedDialog } from "./NotClosedDialog";
+import { isValidUUID, trySyncAuditLog, trySyncNextAction } from "@/lib/backend-safety";
 import {
   useCommitments, openCommitmentFor, commitmentsFor, promiseClose, markKept,
   hoursLeft, isExpired, dueFromWindow,
@@ -54,11 +55,12 @@ export function CloseCommitButton({ leadId, leadName, leadPhone = "", actorName 
   const history = useMemo(() => commitmentsFor(all, leadId), [all, leadId]);
 
   const [open, setOpen] = useState(false);
-  const [windowId, setWindowId] = useState<CloseWindowId>(live?.windowId ?? "48h");
+  const [windowId, setWindowId] = useState<CloseWindowId>(live?.windowId ?? "24h");
   const [customDate, setCustomDate] = useState("");
   const [timeOfDay, setTimeOfDay] = useState("");
   const [steps, setSteps] = useState<string[]>(live?.steps ?? []);
   const [note, setNote] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const def = WINDOW_BY_ID[windowId];
   const isChange = !!live;
@@ -75,26 +77,56 @@ export function CloseCommitButton({ leadId, leadName, leadPhone = "", actorName 
   const strength = promiseStrength({ windowId, timeOfDay, customDate, steps, changeCount: live?.changeCount ?? 0 });
   const flags = live ? riskFlags(live) : [];
 
-  const submit = () => {
+  const submit = async () => {
+    if (isSubmitting) return;
     if (windowId === "custom" && !customDate) {
       toast.error("Pick the exact date you will close this");
       return;
     }
-    promiseClose({ leadId, leadName, leadPhone, windowId, customDate, timeOfDay, steps, note, by: actorName });
-    toast.success(isChange ? `Promise moved — ${def.short}` : `Committed: ${leadName} closes ${fmt(previewDue)}`, {
-      description: steps.length ? `${steps.length} step${steps.length === 1 ? "" : "s"} on your plan` : "No steps picked — add them when you know the plan.",
-    });
-    setNote("");
-    setOpen(false);
+    setIsSubmitting(true);
+    try {
+      const saved = promiseClose({ leadId, leadName, leadPhone, windowId, customDate, timeOfDay, steps, note, by: actorName });
+      
+      // Asynchronous safe backend sync (guarded against non-UUIDs)
+      if (isValidUUID(leadId)) {
+        void trySyncAuditLog(
+          "close_commitment",
+          leadId,
+          isChange ? "closing.moved" : "closing.promised",
+          isChange ? { windowId: live?.windowId, dueAt: live?.dueAt } : null,
+          { windowId: saved.windowId, dueAt: saved.dueAt, steps, note },
+          isChange ? `Promise deadline moved: ${def.short}` : `New closing promise committed: ${def.short}`
+        );
+        void trySyncNextAction(leadId, "collect-payment", saved.dueAt, null);
+      }
+
+      toast.success(isChange ? `Promise moved — ${def.short}` : `Committed: ${leadName} closes ${fmt(previewDue)}`, {
+        description: steps.length ? `${steps.length} step${steps.length === 1 ? "" : "s"} on your plan` : "No steps picked — add them when you know the plan.",
+      });
+      setNote("");
+      setOpen(false);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   // ⌘/Ctrl+Enter commits — the promise should cost one keystroke, not five clicks.
+  // Numeric keys 1–5 quickly select window options when modal is open.
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
+      const isTyping = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
         e.preventDefault();
-        submit();
+        void submit();
+        return;
+      }
+      if (!isTyping && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (e.key === "1") { e.preventDefault(); setWindowId("3h"); }
+        else if (e.key === "2") { e.preventDefault(); setWindowId("24h"); }
+        else if (e.key === "3") { e.preventDefault(); setWindowId("48h"); }
+        else if (e.key === "4") { e.preventDefault(); setWindowId("3d"); }
+        else if (e.key === "5") { e.preventDefault(); setWindowId("7d"); }
       }
     };
     window.addEventListener("keydown", onKey);
@@ -218,7 +250,7 @@ export function CloseCommitButton({ leadId, leadName, leadPhone = "", actorName 
               }
             >
               <div className="grid gap-1.5 sm:grid-cols-2">
-                {CLOSE_WINDOWS.map((w) => {
+                {CLOSE_WINDOWS.map((w, idx) => {
                   const wDue = dueFromWindow(w.id, customDate, timeOfDay);
                   const active = windowId === w.id;
                   return (
@@ -232,7 +264,12 @@ export function CloseCommitButton({ leadId, leadName, leadPhone = "", actorName 
                           active ? cn("border-primary ring-1 ring-primary/40", TONE_STYLE[w.tone]) : "border-border hover:bg-muted",
                         )}
                       >
-                        <span className="block text-[11px] font-semibold">{w.short}</span>
+                        <div className="flex items-center justify-between">
+                          <span className="block text-[11px] font-semibold">{w.short}</span>
+                          {idx < 5 && (
+                            <kbd className="text-[9px] font-mono rounded bg-muted/80 px-1 border border-border text-muted-foreground">{idx + 1}</kbd>
+                          )}
+                        </div>
                         <span className={cn("block text-[10px]", active ? "opacity-80" : "text-muted-foreground")}>
                           {w.id === "custom" ? "you pick the date" : `→ ${fmt(wDue).replace(/,/g, "")}`}
                         </span>
@@ -384,7 +421,21 @@ export function CloseCommitButton({ leadId, leadName, leadPhone = "", actorName 
                 <Button
                   variant="outline"
                   className="gap-1 text-emerald-600"
-                  onClick={() => { markKept(live.id, actorName); toast.success("Marked closed — booking credited"); setOpen(false); }}
+                  onClick={() => {
+                    markKept(live.id, actorName);
+                    if (isValidUUID(leadId)) {
+                      void trySyncAuditLog(
+                        "close_commitment",
+                        leadId,
+                        "closing.kept",
+                        { status: "open", commitmentId: live.id },
+                        { status: "kept", commitmentId: live.id, closedAt: new Date().toISOString() },
+                        "Closing commitment marked kept"
+                      );
+                    }
+                    toast.success("Marked closed — booking credited");
+                    setOpen(false);
+                  }}
                 >
                   <CheckCircle2 className="h-3.5 w-3.5" /> It closed
                 </Button>
@@ -392,6 +443,7 @@ export function CloseCommitButton({ leadId, leadName, leadPhone = "", actorName 
                   commitmentId={live.id}
                   leadName={leadName}
                   actorName={actorName}
+                  leadId={leadId}
                   onDone={() => setOpen(false)}
                   trigger={
                     <Button variant="outline" className="gap-1 text-destructive">

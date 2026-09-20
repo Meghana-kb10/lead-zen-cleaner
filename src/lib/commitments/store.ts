@@ -267,3 +267,49 @@ export function boardStats(all: CloseCommitment[], now = Date.now()) {
     keptToday: all.filter((c) => c.status === "kept" && c.closedAt && new Date(c.closedAt).toDateString() === new Date(now).toDateString()).length,
   };
 }
+
+/** Seed a realistic multi-operator audited customer (Aarav Patel) to demonstrate Question 7 proof. */
+export function seedDemoCustomerAuditTrail(): CloseCommitment {
+  const all = read().filter((c) => c.leadId !== "lead-aarav-001");
+  const now = Date.now();
+  const demo: CloseCommitment = {
+    id: "cc-demo-aarav-patel",
+    leadId: "lead-aarav-001",
+    leadName: "Aarav Patel",
+    leadPhone: "+919876543210",
+    windowId: "3h",
+    dueAt: new Date(now + 3 * 3600_000).toISOString(),
+    blocker: "",
+    confidence: 95,
+    steps: ["Verify tour completion with Sneha", "Send token hold link", "Confirm room reservation in PMS"],
+    note: "Completed physical tour at Koramangala; requested token hold before evening.",
+    promisedBy: "Vikas",
+    promisedAt: new Date(now - 2 * 3600_000).toISOString(),
+    status: "open",
+    changeCount: 1,
+    history: [
+      {
+        at: new Date(now - 1 * 3600_000).toISOString(),
+        by: "Vikas",
+        kind: "changed",
+        windowId: "3h",
+        dueAt: new Date(now + 3 * 3600_000).toISOString(),
+        prevDueAt: new Date(now + 2 * 3600_000).toISOString(),
+        reason: "Customer requested 1-hour extension to arrange net-banking token",
+        steps: ["Verify tour completion with Sneha", "Send token hold link", "Confirm room reservation in PMS"],
+      },
+      {
+        at: new Date(now - 2 * 3600_000).toISOString(),
+        by: "Sneha",
+        kind: "promised",
+        windowId: "3h",
+        dueAt: new Date(now + 2 * 3600_000).toISOString(),
+        note: "Tour completed at Koramangala. Handed over from Movement CARE to Closing Desk.",
+        steps: ["Verify tour completion with Sneha", "Send token hold link"],
+      },
+    ],
+  };
+  write([demo, ...all]);
+  return demo;
+}
+

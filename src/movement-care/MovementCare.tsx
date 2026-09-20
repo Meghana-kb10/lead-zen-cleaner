@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  AlertTriangle, CheckCircle2, ClipboardCopy, Clock3, Flag, Goal,
-  Building2, Hand, MessageCircle, Phone, PhoneCall, PhoneOff, PlayCircle, PlusCircle, ShieldCheck, Timer,
+  AlertTriangle, CheckCircle2, ClipboardCopy, Clock3, ExternalLink, Flag, Goal,
+  Building2, Hand, MessageCircle, Phone, PhoneCall, PhoneOff, PlayCircle, PlusCircle, Send, ShieldCheck, Timer, Users,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { useMovementSync } from "@/movement/bridge";
 import { seedMovement } from "@/movement/seed";
@@ -22,8 +23,9 @@ import { useIdentityStore } from "@/lib/lead-identity/store";
 import { actualForGoal, callStats, queueForGoal, resultStatus } from "./results";
 import { optionById, propertyOptions, propertyProgress, rankedForCustomer } from "./properties";
 import { todaysCommitment, useMovementCare } from "./store";
-import { debriefMessage } from "./debrief";
+import { debriefMessage, generateSmartDebrief } from "./debrief";
 import { CheckpointPanel } from "./CheckpointPanel";
+import { isValidUUID, trySyncAuditLog, trySyncNextAction, trySyncCallRecord } from "@/lib/backend-safety";
 
 const GOAL_TONE: Record<CareGoal, string> = {
   FIND: "border-info/40 bg-info/10 text-info",
@@ -43,6 +45,31 @@ function dueForGoal(goal: CareGoal) {
   const minutes = goal === "CLOSE" ? 60 : goal === "COMPLETE" ? 90 : goal === "SCHEDULE" ? 120 : 180;
   return new Date(Date.now() + minutes * 60_000).toISOString();
 }
+
+function formatDeadlineCountdown(dueAt?: string | null): { text: string; isOverdue: boolean; variant: "destructive" | "warning" | "outline" } {
+  if (!dueAt) return { text: "No deadline", isOverdue: false, variant: "destructive" };
+  const diffMs = new Date(dueAt).getTime() - Date.now();
+  const diffMins = Math.round(diffMs / 60000);
+  if (diffMins < 0) {
+    const overdueMins = Math.abs(diffMins);
+    if (overdueMins < 60) return { text: `Late ${overdueMins}m`, isOverdue: true, variant: "destructive" };
+    const overdueHours = Math.round(overdueMins / 60);
+    return { text: `Late ${overdueHours}h`, isOverdue: true, variant: "destructive" };
+  }
+  if (diffMins < 60) return { text: `Due in ${diffMins}m`, isOverdue: false, variant: "warning" };
+  const diffHours = Math.round(diffMins / 60);
+  return { text: `Due in ${diffHours}h`, isOverdue: false, variant: "outline" };
+}
+
+const rel = (iso?: string | null) => {
+  if (!iso) return "—";
+  const m = Math.round((Date.now() - +new Date(iso)) / 60000);
+  if (m < 1) return "now";
+  if (m < 60) return `${m}m`;
+  if (m < 1440) return `${Math.round(m / 60)}h`;
+  return `${Math.round(m / 1440)}d`;
+};
+
 
 export function MovementCare() {
   useEffect(() => { seedMovement(); }, []);
@@ -73,6 +100,9 @@ export function MovementCare() {
   const [propertyQuery, setPropertyQuery] = useState("");
   const [debriefFor, setDebriefFor] = useState<{ ulid: string; code: string } | null>(null);
   const [showManual, setShowManual] = useState(false);
+  const [lastCallOutcome, setLastCallOutcome] = useState<CallResult | null>(null);
+  const [customDebriefOpen, setCustomDebriefOpen] = useState(false);
+  const [editedDebrief, setEditedDebrief] = useState<{ done: string; wentWell: string; wentBadly: string; problems: string } | null>(null);
   const manualMode = useMovementCare((state) => state.manualMode);
   const manualSize = useMovementCare((state) => state.manualSize);
   const manualList = useMovementCare((state) => state.manualList);
@@ -273,7 +303,17 @@ export function MovementCare() {
 
   const endCall = (result: CallResult) => {
     if (!selectedState) return;
+    setLastCallOutcome(result);
     mv.logCall(selectedState.ulid, result);
+
+    // Asynchronously log call record to backend where safely supported
+    trySyncCallRecord({
+      leadUlid: selectedState.ulid,
+      customerName: nameOf.get(selectedState.ulid)?.name,
+      outcome: result,
+      agenda: `${activeGoal} customer contact`,
+    });
+
     if (result !== "connected" && result !== "wrong-number") {
       mv.setNextAction(selectedState.ulid, {
         kind: "call",
@@ -283,7 +323,7 @@ export function MovementCare() {
         note: `Retry call — ${result}`,
       });
     }
-    toast.success(result === "connected" ? "Connected call logged" : `Call logged as ${result}`);
+    toast.success(result === "connected" ? "Connected call logged · wrap-up ready" : `Call logged as ${result}`);
   };
 
   const aimProperty = (propertyId: string) => {
@@ -301,6 +341,141 @@ export function MovementCare() {
     });
     toast.success(`${option.name} locked as the property to close`);
   };
+
+  /** Dynamic debrief and customer WhatsApp follow-up, written FOR the operator */
+  const smartDebrief = useMemo(() => {
+    if (!selectedState) return null;
+    const customerName = nameOf.get(selectedState.ulid)?.name ?? selectedState.ulid;
+    return generateSmartDebrief({
+      customerName,
+      goal: activeGoal,
+      operatorName: mv.actor.name,
+      callOutcome: lastCallOutcome,
+      property: selectedState.tourProperty,
+      stage: selectedState.stage,
+      budget: selectedState.q?.budget,
+      area: nameOf.get(selectedState.ulid)?.area,
+      moveIn: selectedState.q?.moveInDate ?? selectedState.checkInDate,
+      roomType: selectedState.q?.roomType,
+      nextStep: selectedState.nextAction ? NEXT_ACTION_LABEL[selectedState.nextAction.kind] : undefined,
+      dueAt: selectedState.nextAction?.dueAt,
+    });
+  }, [selectedState, nameOf, activeGoal, mv.actor.name, lastCallOutcome]);
+
+  /** 1-click atomic action: commits debrief, schedules next action, auto-copies WhatsApp update, and advances queue */
+  const handleSendWrapUpAndNext = async () => {
+    if (!commitment || !selectedState) return;
+    const debriefContent = editedDebrief ?? smartDebrief ?? {
+      done: selectedState.tourProperty
+        ? `Property in play: ${selectedState.tourProperty}.`
+        : "Customer record reviewed.",
+      wentWell: "Not recorded",
+      wentBadly: "Not recorded",
+      problems: "Not recorded",
+    };
+
+    const code = selectedState.waDraft ?? (activeGoal === "CLOSE" ? "D1" : activeGoal === "SCHEDULE" ? "D2" : "D3");
+    const nextKind = GOAL_NEXT[activeGoal];
+    const nextDue = dueForGoal(activeGoal);
+    const nextOwner = selectedState.primaryOwnerId || mv.actor.id;
+    const nextOwnerName = selectedState.primaryOwnerName || mv.actor.name;
+
+    // 1. Advance movement state & lock
+    mv.draft(selectedState.ulid, code);
+    mv.attemptClaim(
+      selectedState.ulid,
+      activeGoal === "SCHEDULE" || activeGoal === "COMPLETE" ? "tour" : activeGoal === "CLOSE" ? "closing" : "work",
+      stage.outcome
+    );
+    mv.setNextAction(selectedState.ulid, {
+      kind: nextKind,
+      dueAt: nextDue,
+      ownerId: nextOwner,
+      ownerName: nextOwnerName,
+      note: `${activeGoal}: ${stage.outcome}`,
+    });
+
+    // 2. Generate and save debrief
+    const message = debriefMessage({
+      ...debriefContent,
+      customerName: nameOf.get(selectedState.ulid)?.name ?? selectedState.ulid,
+      draftCode: code,
+      goal: activeGoal,
+      operatorName: mv.actor.name,
+      resultNow: actual + 1,
+      commitCount: commitment.commitCount,
+      property: selectedState.tourProperty ?? undefined,
+      nextStep: NEXT_ACTION_LABEL[nextKind],
+      dueAt: nextDue,
+    });
+
+    const saved = saveDebrief({
+      ulid: selectedState.ulid,
+      customerName: nameOf.get(selectedState.ulid)?.name ?? selectedState.ulid,
+      draftCode: code,
+      goal: activeGoal,
+      message,
+      ...debriefContent,
+    });
+
+    // 3. Log event
+    mv.log(
+      selectedState.ulid,
+      "note",
+      `${code} wrap-up · done: ${debriefContent.done || "—"} · well: ${debriefContent.wentWell || "—"} · badly: ${debriefContent.wentBadly || "—"} · problem: ${debriefContent.problems || "none"}`
+    );
+
+    // 4. Auto-copy team update to clipboard
+    try {
+      await navigator.clipboard.writeText(message);
+      markDebriefSent(saved.id);
+      toast.success("Wrap-up copied & saved! Moving to next customer...", {
+        description: `Next action: ${NEXT_ACTION_LABEL[nextKind]} scheduled.`,
+      });
+    } catch {
+      toast.success("Wrap-up saved! Moving to next customer...");
+    }
+
+    // 5. Asynchronous safe backend sync (guarded by backend-safety helper)
+    if (isValidUUID(selectedState.ulid)) {
+      trySyncAuditLog(
+        "lead",
+        selectedState.ulid,
+        "movement.wrap_up",
+        { stage: selectedState.stage },
+        { stage: selectedState.stage, nextAction: nextKind, debrief: debriefContent },
+        `${code} wrap-up completed`
+      );
+      trySyncNextAction(
+        selectedState.ulid,
+        nextKind,
+        nextDue,
+        selectedState.primaryOwnerId
+      );
+    }
+
+    // 6. Automatically advance to next customer in queue
+    const currentIndex = queue.findIndex((q) => q.ulid === selectedState.ulid);
+    const nextItem = queue[currentIndex + 1] ?? queue[0];
+    if (nextItem && nextItem.ulid !== selectedState.ulid) {
+      setSelected(nextItem.ulid);
+    }
+    setEditedDebrief(null);
+    setLastCallOutcome(null);
+    setDebriefFor(null);
+  };
+
+  // Keyboard shortcut: Ctrl+Enter / Cmd+Enter sends wrap-up and moves to next customer
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+        e.preventDefault();
+        handleSendWrapUpAndNext();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [handleSendWrapUpAndNext]);
 
   const saveReport = () => {
     if (!commitment) return;
@@ -368,10 +543,10 @@ export function MovementCare() {
         </div>
 
         {commitment && (
-          <div className="mt-2 grid grid-cols-[minmax(180px,1fr)_repeat(6,minmax(70px,auto))] gap-1.5 overflow-x-auto">
-            <div className="min-w-[180px] rounded-md border bg-background px-2 py-1.5">
+          <div className="mt-2 flex flex-wrap items-center gap-1.5 overflow-x-auto">
+            <div className="min-w-[170px] flex-1 rounded-md border bg-background px-2.5 py-1.5 shadow-2xs">
               <div className="flex items-center justify-between gap-2 text-[10px] font-semibold">
-                <span>MY RESULT · {activeGoal}</span><span>{actual}/{commitment.commitCount}</span>
+                <span className="text-primary font-bold">MY RESULT · {activeGoal}</span><span>{actual}/{commitment.commitCount}</span>
               </div>
               <Progress value={progress} className="mt-1 h-1.5" />
             </div>
@@ -463,19 +638,76 @@ export function MovementCare() {
           <main className="min-h-0 overflow-y-auto p-2">
             {selectedState && selectedResult ? (
               <div className="space-y-2">
-                <div className="border bg-card p-3">
-                  <div className="flex flex-wrap items-start gap-2">
-                    <div className="min-w-0 flex-1">
-                      <p className="text-[10px] font-semibold uppercase text-muted-foreground">Result contract</p>
-                      <h2 className="truncate text-base font-semibold">{nameOf.get(selectedState.ulid)?.name ?? selectedState.ulid}</h2>
-                      <p className="text-xs text-muted-foreground">{selectedState.lastCustomerMsg ?? "Latest WhatsApp message is waiting to be captured."}</p>
-                    </div>
-                    <Button size="sm" onClick={acceptDraft}><CheckCircle2 className="h-3.5 w-3.5" /> Draft done · write wrap-up</Button>
+                {/* ── 1. BUSINESS OUTCOME STATEMENT ── */}
+                <div className="flex items-center justify-between gap-2 rounded-md border border-primary/25 bg-primary/5 px-3 py-1.5 text-xs">
+                  <div className="flex items-center gap-1.5 font-medium text-primary">
+                    <Flag className="h-3.5 w-3.5 shrink-0" />
+                    <span>Deliver today's accepted result: complete movement and prevent promises from slipping.</span>
                   </div>
-                  <div className="mt-3 grid grid-cols-2 gap-1.5 sm:grid-cols-3">
+                  <Badge variant="outline" className="text-[10px] font-semibold text-primary border-primary/40 shrink-0">
+                    Goal: {activeGoal}
+                  </Badge>
+                </div>
+
+                {/* ── 2. RESULT CONTRACT & ACCOUNTABILITY HEADER ── */}
+                <div className="border bg-card p-3">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h2 className="truncate text-base font-bold">{nameOf.get(selectedState.ulid)?.name ?? selectedState.ulid}</h2>
+                        <DraftChip code={selectedState.crmDraft} />
+                        <Badge variant="outline" className="gap-1 text-[10px] font-medium bg-muted/40">
+                          <Users className="h-3 w-3 text-primary" /> Owner: {selectedState.primaryOwnerName || mv.actor.name}
+                        </Badge>
+                        {(() => {
+                          const cd = formatDeadlineCountdown(selectedState.nextAction?.dueAt);
+                          if (cd.isOverdue) {
+                            return (
+                              <Badge variant="destructive" className="animate-pulse gap-1 text-[10px] font-semibold">
+                                <AlertTriangle className="h-3 w-3" /> {cd.text}
+                              </Badge>
+                            );
+                          }
+                          if (cd.variant === "warning") {
+                            return (
+                              <Badge variant="outline" className="border-warning/60 text-warning bg-warning/10 gap-1 text-[10px] font-semibold">
+                                <Clock3 className="h-3 w-3" /> {cd.text}
+                              </Badge>
+                            );
+                          }
+                          return (
+                            <Badge variant="outline" className="gap-1 text-[10px] text-muted-foreground">
+                              <Clock3 className="h-3 w-3" /> {cd.text}
+                            </Badge>
+                          );
+                        })()}
+                        {selectedState.customerWaitingSince && (
+                          <Badge variant="secondary" className="text-[10px]">
+                            Waiting {rel(selectedState.customerWaitingSince)}
+                          </Badge>
+                        )}
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {selectedState.lastCustomerMsg ?? "Latest WhatsApp message is waiting to be captured."}
+                      </p>
+                    </div>
+                    <Button
+                      size="sm"
+                      className="gap-1.5 font-semibold bg-primary hover:bg-primary/90 shadow-sm"
+                      onClick={handleSendWrapUpAndNext}
+                    >
+                      <Send className="h-3.5 w-3.5" />
+                      Send Wrap-up & Next
+                      <kbd className="ml-1 hidden rounded bg-primary-foreground/20 px-1 py-0.5 text-[9px] font-mono text-primary-foreground sm:inline-block">
+                        Ctrl+Enter
+                      </kbd>
+                    </Button>
+                  </div>
+
+                  <div className="mt-2.5 grid grid-cols-2 gap-1.5 sm:grid-cols-3">
                     <ContractCell label="Expected result" value={stage.outcome} />
                     <ContractCell label="Accountable owner" value={selectedState.primaryOwnerName || mv.actor.name} good={Boolean(selectedState.primaryOwnerId)} />
-                    <ContractCell label="Deadline" value={selectedState.nextAction ? new Date(selectedState.nextAction.dueAt).toLocaleString() : "Set when draft is accepted"} good={Boolean(selectedState.nextAction)} />
+                    <ContractCell label="Deadline" value={selectedState.nextAction ? new Date(selectedState.nextAction.dueAt).toLocaleString() : "Set automatically on wrap-up"} good={Boolean(selectedState.nextAction)} />
                     <ContractCell label="Proof required" value={stage.proof} />
                     <ContractCell label="Receiver" value={stage.receiver} />
                     <ContractCell label="Acceptance" value={selectedResult.accepted ? "Accepted" : "Not accepted yet"} good={selectedResult.accepted} />
@@ -485,46 +717,38 @@ export function MovementCare() {
                       <AlertTriangle className="h-3.5 w-3.5" /> Not under control: add {selectedResult.missing.join(", ")}.
                     </div>
                   )}
-                  <div className="mt-2 border-t pt-2">
-                    <p className="text-[10px] font-semibold uppercase text-muted-foreground">How this result is produced</p>
-                    <ol className="mt-1 grid gap-0.5 sm:grid-cols-2">
-                      {stage.steps.map((step, index) => (
-                        <li key={step} className="flex gap-1.5 text-[11px] leading-snug">
-                          <span className="font-mono text-[10px] text-muted-foreground">{index + 1}.</span>{step}
-                        </li>
-                      ))}
-                    </ol>
-                    <p className="mt-1 text-[10px] text-destructive">Does not count: {stage.doesNotCount}</p>
-                  </div>
                 </div>
+
+                {/* ── 3. CONNECTED CALL BAR ── */}
                 <div className="border bg-card p-3">
                   <div className="flex flex-wrap items-center gap-2">
                     <PhoneCall className="h-3.5 w-3.5 text-primary" />
-                    <p className="text-[10px] font-semibold uppercase text-muted-foreground">Connected call — the result only counts when the customer talks</p>
+                    <p className="text-[10px] font-semibold uppercase text-muted-foreground">Connected call — result counts when customer talks</p>
                     <span className="ml-auto text-[10px] text-muted-foreground">Today {calls.connected} connected of {calls.dialled} dialled · {calls.rate}%</span>
                   </div>
                   <div className="mt-2 flex flex-wrap gap-1.5">
                     <Button size="sm" onClick={dial}><Phone className="h-3.5 w-3.5" /> Start call {selectedState.phone ? `· ${selectedState.phone}` : ""}</Button>
-                    <Button size="sm" variant="outline" className="border-success/50 text-success" onClick={() => endCall("connected")}><CheckCircle2 className="h-3.5 w-3.5" /> Connected</Button>
+                    <Button size="sm" variant="outline" className="border-success/50 text-success font-medium" onClick={() => endCall("connected")}><CheckCircle2 className="h-3.5 w-3.5" /> Connected</Button>
                     {(["no-answer", "busy", "rejected", "wrong-number"] as CallResult[]).map((result) => (
                       <Button key={result} size="sm" variant="outline" onClick={() => endCall(result)}>
                         <PhoneOff className="h-3.5 w-3.5" /> {result.replace("-", " ")}
                       </Button>
                     ))}
                   </div>
-                  <p className="mt-1.5 text-[10px] text-muted-foreground">
+                  <p className="mt-1 text-[10px] text-muted-foreground">
                     Work state: {selectedState.work} · last outbound {selectedState.lastOutboundAt ? new Date(selectedState.lastOutboundAt).toLocaleTimeString() : "none today"}
                   </p>
                 </div>
 
+                {/* ── 4. AIM PROPERTY TO CLOSE ── */}
                 <div className="border bg-card p-3">
                   <div className="flex flex-wrap items-center gap-2">
                     <Building2 className="h-3.5 w-3.5 text-primary" />
-                    <p className="text-[10px] font-semibold uppercase text-muted-foreground">Property I am aiming to close for this customer</p>
-                    <span className="ml-auto text-[10px] font-medium">{selectedState.tourProperty ?? "No property locked yet"}</span>
+                    <p className="text-[10px] font-semibold uppercase text-muted-foreground">Property aimed for this customer</p>
+                    <span className="ml-auto text-[10px] font-medium text-primary">{selectedState.tourProperty ?? "No property locked yet"}</span>
                   </div>
                   <div className="mt-2 grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
-                    {rankedForCustomer(selectedState, aimed).slice(0, 6).map((option) => (
+                    {rankedForCustomer(selectedState, aimed).slice(0, 3).map((option) => (
                       <Button key={option.id} variant="outline" onClick={() => aimProperty(option.id)}
                         className={cn("h-auto justify-start whitespace-normal p-2 text-left", selectedState.tourProperty === option.name && "border-primary bg-primary/10")}>
                         <span>
@@ -539,12 +763,141 @@ export function MovementCare() {
                   </div>
                 </div>
 
-                {debriefFor?.ulid === selectedState.ulid && (
-                  <DebriefCard code={debriefFor.code} customer={nameOf.get(selectedState.ulid)?.name ?? selectedState.ulid}
-                    onSave={finishDebrief} onCopy={copyMessage} onPreview={previewMessage} onClose={() => setDebriefFor(null)} />
-                )}
+                {/* ── 5. AUTO-GENERATED WRAP-UP & WHATSAPP ACTION (Written FOR the person) ── */}
+                <div className="rounded-md border-2 border-primary/40 bg-card p-3 shadow-2xs">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-2">
+                    <div className="flex items-center gap-2">
+                      <MessageCircle className="h-4 w-4 text-primary" />
+                      <span className="text-xs font-bold uppercase tracking-wider text-foreground">
+                        Auto-Generated Wrap-Up & Follow-Up
+                      </span>
+                      <Badge variant="outline" className="text-[10px] font-semibold text-primary border-primary/30">
+                        Written for you
+                      </Badge>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 text-[10px] text-muted-foreground"
+                        onClick={() => setCustomDebriefOpen((prev) => !prev)}
+                      >
+                        {customDebriefOpen ? "Hide edit form" : "Customize debrief text"}
+                      </Button>
+                      <Button
+                        size="sm"
+                        className="h-8 gap-1.5 font-semibold bg-primary hover:bg-primary/90 shadow-sm"
+                        onClick={handleSendWrapUpAndNext}
+                      >
+                        <Send className="h-3.5 w-3.5" />
+                        Send Wrap-up & Next
+                        <kbd className="ml-1 hidden rounded bg-primary-foreground/20 px-1 py-0.5 text-[9px] font-mono text-primary-foreground sm:inline-block">
+                          Ctrl+Enter
+                        </kbd>
+                      </Button>
+                    </div>
+                  </div>
 
-                <WorkPanel ulid={selected} meta={nameOf} />
+                  {customDebriefOpen ? (
+                    <div className="mt-2 grid gap-1.5 sm:grid-cols-2">
+                      <label className="text-[10px] font-semibold uppercase text-muted-foreground">What is done?
+                        <Textarea
+                          value={editedDebrief?.done ?? smartDebrief?.done ?? ""}
+                          onChange={(e) => setEditedDebrief((prev) => ({ ...(prev ?? smartDebrief ?? { done: "", wentWell: "", wentBadly: "", problems: "" }), done: e.target.value }))}
+                          className="mt-1 min-h-12 text-xs"
+                        />
+                      </label>
+                      <label className="text-[10px] font-semibold uppercase text-muted-foreground">What went well?
+                        <Textarea
+                          value={editedDebrief?.wentWell ?? smartDebrief?.wentWell ?? ""}
+                          onChange={(e) => setEditedDebrief((prev) => ({ ...(prev ?? smartDebrief ?? { done: "", wentWell: "", wentBadly: "", problems: "" }), wentWell: e.target.value }))}
+                          className="mt-1 min-h-12 text-xs"
+                        />
+                      </label>
+                      <label className="text-[10px] font-semibold uppercase text-muted-foreground">What went badly?
+                        <Textarea
+                          value={editedDebrief?.wentBadly ?? smartDebrief?.wentBadly ?? ""}
+                          onChange={(e) => setEditedDebrief((prev) => ({ ...(prev ?? smartDebrief ?? { done: "", wentWell: "", wentBadly: "", problems: "" }), wentBadly: e.target.value }))}
+                          className="mt-1 min-h-12 text-xs"
+                        />
+                      </label>
+                      <label className="text-[10px] font-semibold uppercase text-muted-foreground">Problems / Help needed?
+                        <Textarea
+                          value={editedDebrief?.problems ?? smartDebrief?.problems ?? ""}
+                          onChange={(e) => setEditedDebrief((prev) => ({ ...(prev ?? smartDebrief ?? { done: "", wentWell: "", wentBadly: "", problems: "" }), problems: e.target.value }))}
+                          className="mt-1 min-h-12 text-xs"
+                        />
+                      </label>
+                    </div>
+                  ) : (
+                    <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                      <div className="rounded-md border bg-muted/25 p-2 text-xs">
+                        <div className="flex items-center justify-between font-semibold text-[10px] uppercase text-muted-foreground">
+                          <span>Customer WhatsApp Follow-up</span>
+                          {selectedState.phone && (
+                            <a
+                              href={`https://wa.me/${selectedState.phone.replace(/[^0-9]/g, "")}?text=${encodeURIComponent(smartDebrief?.customerMessage ?? "")}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="flex items-center gap-1 text-[10px] text-primary hover:underline font-medium"
+                            >
+                              <ExternalLink className="h-3 w-3" /> Open in WhatsApp
+                            </a>
+                          )}
+                        </div>
+                        <p className="mt-1 text-[11px] leading-relaxed text-foreground/90">
+                          "{smartDebrief?.customerMessage}"
+                        </p>
+                      </div>
+                      <div className="rounded-md border bg-muted/25 p-2 text-xs">
+                        <div className="flex items-center justify-between font-semibold text-[10px] uppercase text-muted-foreground">
+                          <span>Team Wrap-up Update</span>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-5 px-1.5 text-[9px] text-primary"
+                            onClick={() => {
+                              if (smartDebrief) {
+                                const preview = debriefMessage({
+                                  ...(editedDebrief ?? smartDebrief),
+                                  customerName: nameOf.get(selectedState.ulid)?.name ?? selectedState.ulid,
+                                  draftCode: selectedState.waDraft ?? "D1",
+                                  goal: activeGoal,
+                                  operatorName: mv.actor.name,
+                                  resultNow: actual,
+                                  commitCount: commitment.commitCount,
+                                  property: selectedState.tourProperty ?? undefined,
+                                  nextStep: selectedState.nextAction ? NEXT_ACTION_LABEL[selectedState.nextAction.kind] : undefined,
+                                  dueAt: selectedState.nextAction?.dueAt,
+                                });
+                                navigator.clipboard.writeText(preview);
+                                toast.success("Team debrief copied to clipboard!");
+                              }
+                            }}
+                          >
+                            <ClipboardCopy className="h-2.5 w-2.5 mr-1" /> Copy update
+                          </Button>
+                        </div>
+                        <div className="mt-1 space-y-0.5 text-[10px] text-muted-foreground">
+                          <p className="truncate"><strong className="text-foreground">Done:</strong> {editedDebrief?.done ?? smartDebrief?.done}</p>
+                          <p className="truncate"><strong className="text-foreground">Well:</strong> {editedDebrief?.wentWell ?? smartDebrief?.wentWell}</p>
+                          <p className="truncate"><strong className="text-foreground">Next:</strong> {selectedState.nextAction ? `${NEXT_ACTION_LABEL[selectedState.nextAction.kind]} by ${new Date(selectedState.nextAction.dueAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : `Scheduled automatically on wrap-up`}</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* ── 6. DETAILED CRM TIMELINE & LEGACY CONTROLS (Zero Regressions) ── */}
+                <details className="rounded-md border bg-card/60 p-2.5 text-xs text-muted-foreground transition hover:bg-card">
+                  <summary className="cursor-pointer font-semibold select-none flex items-center justify-between text-muted-foreground hover:text-foreground">
+                    <span>Detailed CRM Timeline & Legacy Controls</span>
+                    <Badge variant="outline" className="text-[9px]">Legacy view</Badge>
+                  </summary>
+                  <div className="mt-3 border-t pt-3">
+                    <WorkPanel ulid={selected} meta={nameOf} />
+                  </div>
+                </details>
               </div>
             ) : (
               <div className="flex h-full items-center justify-center text-sm text-muted-foreground">Choose a customer to own a result.</div>
@@ -552,69 +905,80 @@ export function MovementCare() {
           </main>
 
           <aside className="min-h-0 overflow-y-auto border-l bg-card p-2">
-            <CheckpointPanel role={activeRole} operatorId={mv.actor.id} operatorName={mv.actor.name}
-              states={list} events={events} onOpenCustomer={setSelected} />
+            <Tabs defaultValue="checkpoints" className="w-full">
+              <TabsList className="grid w-full grid-cols-3 h-8 text-[10px]">
+                <TabsTrigger value="checkpoints" className="text-[10px] px-1">Checkpoints</TabsTrigger>
+                <TabsTrigger value="summary" className="text-[10px] px-1">Day Goals</TabsTrigger>
+                <TabsTrigger value="timeline" className="text-[10px] px-1">Timeline</TabsTrigger>
+              </TabsList>
 
-            <div className="mt-2"><ProgressReporter round={round} onRound={setRound} actual={actual} committed={commitment.commitCount}
-              moved={moved} stuck={stuck} need={need} onMoved={setMoved} onStuck={setStuck} onNeed={setNeed} onSave={saveReport} />
-            </div>
+              <TabsContent value="checkpoints" className="space-y-2 mt-2">
+                <CheckpointPanel role={activeRole} operatorId={mv.actor.id} operatorName={mv.actor.name}
+                  states={list} events={events} onOpenCustomer={setSelected} />
+                <ProgressReporter round={round} onRound={setRound} actual={actual} committed={commitment.commitCount}
+                  moved={moved} stuck={stuck} need={need} onMoved={setMoved} onStuck={setStuck} onNeed={setNeed} onSave={saveReport} />
+                {weakRounds >= 2 && (
+                  <div className="border border-destructive/40 bg-destructive/10 p-2 text-xs">
+                    <p className="font-semibold text-destructive">Manager support required now</p>
+                    <p className="mt-0.5 text-muted-foreground">Two rounds are weak. Remove or re-route one blocker before continuing.</p>
+                  </div>
+                )}
+              </TabsContent>
 
-            {weakRounds >= 2 && (
-              <div className="mt-2 border border-destructive/40 bg-destructive/10 p-2 text-xs">
-                <p className="font-semibold text-destructive">Manager support required now</p>
-                <p className="mt-0.5 text-muted-foreground">Two rounds are weak. Remove or re-route one blocker before continuing.</p>
-              </div>
-            )}
-
-            <div className="mt-2 border p-2">
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-[10px] font-semibold uppercase text-muted-foreground">Today’s promise</p>
-                <Button size="sm" variant="ghost" className="h-6 px-1.5 text-[9px]" onClick={clearCommitment}>Reset</Button>
-              </div>
-              <p className="mt-1 text-xs font-semibold">I will deliver {commitment.commitCount} {stage.unit} today.</p>
-              <p className="mt-1 text-[10px] text-muted-foreground">{stage.outcome}</p>
-              {commitment.supportNeeded && <p className="mt-1 text-[10px]"><strong>Support:</strong> {commitment.supportNeeded}</p>}
-            </div>
-
-            <div className="mt-2 border p-2">
-              <div className="flex items-center gap-1.5"><Building2 className="h-3.5 w-3.5 text-primary" /><p className="text-[10px] font-semibold uppercase text-muted-foreground">Properties I am closing today</p></div>
-              {aimProgress.length === 0 ? (
-                <p className="mt-1 text-[10px] text-muted-foreground">No property picked for today. Choose one on any customer to start the closing list.</p>
-              ) : (
-                <div className="mt-1.5 space-y-1.5">
-                  {aimProgress.map((row) => (
-                    <div key={row.id} className="border px-2 py-1.5">
-                      <p className="text-[11px] font-semibold">{row.name}</p>
-                      <p className="text-[9px] text-muted-foreground">{row.area} · {row.bedsFree} beds free</p>
-                      <p className="mt-0.5 text-[10px]">Aimed {row.aimed} · tours {row.toursSet} · done {row.toursDone} · booked <strong className={cn(row.booked > 0 && "text-success")}>{row.booked}</strong></p>
-                    </div>
-                  ))}
+              <TabsContent value="summary" className="space-y-2 mt-2">
+                <div className="border p-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[10px] font-semibold uppercase text-muted-foreground">Today’s promise</p>
+                    <Button size="sm" variant="ghost" className="h-6 px-1.5 text-[9px]" onClick={clearCommitment}>Reset</Button>
+                  </div>
+                  <p className="mt-1 text-xs font-semibold">I will deliver {commitment.commitCount} {stage.unit} today.</p>
+                  <p className="mt-1 text-[10px] text-muted-foreground">{stage.outcome}</p>
+                  {commitment.supportNeeded && <p className="mt-1 text-[10px]"><strong>Support:</strong> {commitment.supportNeeded}</p>}
                 </div>
-              )}
-            </div>
 
-            <div className="mt-2 border p-2">
-              <div className="flex items-center gap-1.5"><MessageCircle className="h-3.5 w-3.5 text-primary" /><p className="text-[10px] font-semibold uppercase text-muted-foreground">Wrap-ups sent today</p></div>
-              {todaysDebriefs.length === 0 ? (
-                <p className="mt-1 text-[10px] text-muted-foreground">After each draft, write the wrap-up and paste it in the team group.</p>
-              ) : (
-                <div className="mt-1.5 space-y-1.5">
-                  {todaysDebriefs.slice(0, 6).map((item) => (
-                    <div key={item.id} className="border px-2 py-1.5">
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="truncate text-[11px] font-semibold">{item.draftCode} · {item.customerName}</p>
-                        <Button size="sm" variant="ghost" className="h-6 px-1 text-[9px]" onClick={() => copyMessage(item.id, item.message)}>
-                          <ClipboardCopy className="h-3 w-3" /> Copy
-                        </Button>
-                      </div>
-                      <p className="text-[9px] text-muted-foreground">{item.sentOnWhatsapp ? "Copied for WhatsApp" : "Not sent yet"} · {new Date(item.createdAt).toLocaleTimeString()}</p>
+                <div className="border p-2">
+                  <div className="flex items-center gap-1.5"><Building2 className="h-3.5 w-3.5 text-primary" /><p className="text-[10px] font-semibold uppercase text-muted-foreground">Properties I am closing today</p></div>
+                  {aimProgress.length === 0 ? (
+                    <p className="mt-1 text-[10px] text-muted-foreground">No property picked for today. Choose one on any customer to start the closing list.</p>
+                  ) : (
+                    <div className="mt-1.5 space-y-1.5">
+                      {aimProgress.map((row) => (
+                        <div key={row.id} className="border px-2 py-1.5">
+                          <p className="text-[11px] font-semibold">{row.name}</p>
+                          <p className="text-[9px] text-muted-foreground">{row.area} · {row.bedsFree} beds free</p>
+                          <p className="mt-0.5 text-[10px]">Aimed {row.aimed} · tours {row.toursSet} · done {row.toursDone} · booked <strong className={cn(row.booked > 0 && "text-success")}>{row.booked}</strong></p>
+                        </div>
+                      ))}
                     </div>
-                  ))}
+                  )}
                 </div>
-              )}
-            </div>
 
-            <div className="mt-2"><JourneyTimeline ulid={selected} /></div>
+                <div className="border p-2">
+                  <div className="flex items-center gap-1.5"><MessageCircle className="h-3.5 w-3.5 text-primary" /><p className="text-[10px] font-semibold uppercase text-muted-foreground">Wrap-ups sent today ({todaysDebriefs.length})</p></div>
+                  {todaysDebriefs.length === 0 ? (
+                    <p className="mt-1 text-[10px] text-muted-foreground">After each draft, write the wrap-up and paste it in the team group.</p>
+                  ) : (
+                    <div className="mt-1.5 space-y-1.5 max-h-[300px] overflow-y-auto">
+                      {todaysDebriefs.map((item) => (
+                        <div key={item.id} className="border px-2 py-1.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="truncate text-[11px] font-semibold">{item.draftCode} · {item.customerName}</p>
+                            <Button size="sm" variant="ghost" className="h-6 px-1 text-[9px]" onClick={() => copyMessage(item.id, item.message)}>
+                              <ClipboardCopy className="h-3 w-3" /> Copy
+                            </Button>
+                          </div>
+                          <p className="text-[9px] text-muted-foreground">{item.sentOnWhatsapp ? "Copied for WhatsApp" : "Not sent yet"} · {new Date(item.createdAt).toLocaleTimeString()}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </TabsContent>
+
+              <TabsContent value="timeline" className="mt-2">
+                <JourneyTimeline ulid={selected} />
+              </TabsContent>
+            </Tabs>
           </aside>
         </div>
       )}

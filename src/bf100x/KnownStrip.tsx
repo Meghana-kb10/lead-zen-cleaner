@@ -44,59 +44,77 @@ export function KnownStrip({ lead }: { lead: FlowLead }) {
     return out;
   }, [rows]);
 
+  const latest = rows.length > 0 ? rows[rows.length - 1] : null;
+
   return (
-    <div className="shrink-0 border-b bg-muted/30 px-3 py-1.5">
+    <div className="shrink-0 border-b bg-muted/20 px-3 py-1 text-[10px]">
       <div className="flex items-center gap-2">
-        <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-          Already filled · {rows.length}
+        <span className="shrink-0 font-medium text-muted-foreground">
+          Already filled ({rows.length})
         </span>
+
+        {rows.length === 0 ? (
+          <span className="text-muted-foreground/75 truncate">No answers saved yet</span>
+        ) : !open ? (
+          <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+            {latest && (
+              <span className="truncate text-muted-foreground">
+                <span className="text-muted-foreground/80">{latest.label}:</span>{" "}
+                <span className="font-medium text-foreground">{short(latest.value)}</span>
+              </span>
+            )}
+            {rows.length > 1 && (
+              <span className="shrink-0 rounded bg-muted/60 px-1 py-0.2 text-[9px] text-muted-foreground">
+                +{rows.length - 1} more
+              </span>
+            )}
+          </div>
+        ) : null}
+
         {rows.length > 0 && (
           <button
             type="button"
             onClick={() => setOpen((v) => !v)}
-            className="ml-auto flex shrink-0 items-center gap-0.5 rounded-md border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+            className="ml-auto flex shrink-0 items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted hover:text-foreground"
           >
-            {open ? "Hide all" : "Read all"}
+            {open ? "Collapse" : "View all"}
             {open ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
           </button>
         )}
       </div>
 
-      {rows.length === 0 ? (
-        <p className="mt-0.5 text-[10px] text-muted-foreground">
-          Nothing answered yet — the first answer you save appears right here.
-        </p>
-      ) : !open ? (
-        // newest answers first, one scrollable line so the layout never grows
-        <div className="mt-1 flex gap-1 overflow-x-auto pb-0.5">
-          {[...rows].reverse().map((r, i) => (
-            <span
-              key={`${r.label}-${i}`}
-              title={`${r.label}: ${r.value}`}
-              className={cn(
-                "shrink-0 rounded-md border bg-background px-1.5 py-0.5 text-[10px]",
-                i === 0 && "border-primary/50 text-primary",
-              )}
-            >
-              <span className="text-muted-foreground">{r.label}:</span> <span className="font-medium">{short(r.value)}</span>
-            </span>
-          ))}
-        </div>
-      ) : (
-        <div className="mt-1 max-h-40 space-y-1.5 overflow-y-auto pr-1">
-          {grouped.map((g, i) => (
-            <div key={`${g.group}-${i}`}>
-              <p className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">{g.group}</p>
-              <div className="mt-0.5 grid gap-0.5">
-                {g.rows.map((r, j) => (
-                  <div key={`${r.label}-${j}`} className="flex gap-2 text-[10px]">
-                    <span className="w-[7.5rem] shrink-0 text-muted-foreground">{r.label}</span>
-                    <span className="min-w-0 font-medium">{r.value}</span>
-                  </div>
-                ))}
+      {open && rows.length > 0 && (
+        <div className="mt-1.5 border-t pt-1.5">
+          <div className="flex gap-1 overflow-x-auto pb-1 mb-1.5">
+            {[...rows].reverse().map((r, i) => (
+              <span
+                key={`${r.label}-${i}`}
+                title={`${r.label}: ${r.value}`}
+                className={cn(
+                  "shrink-0 rounded border bg-background px-1.5 py-0.5 text-[9px]",
+                  i === 0 && "border-primary/50 text-primary font-medium",
+                )}
+              >
+                <span className="text-muted-foreground">{r.label}:</span>{" "}
+                <span className="font-medium">{short(r.value)}</span>
+              </span>
+            ))}
+          </div>
+          <div className="max-h-36 space-y-1.5 overflow-y-auto pr-1">
+            {grouped.map((g, i) => (
+              <div key={`${g.group}-${i}`}>
+                <p className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">{g.group}</p>
+                <div className="mt-0.5 grid gap-0.5">
+                  {g.rows.map((r, j) => (
+                    <div key={`${r.label}-${j}`} className="flex gap-2 text-[10px]">
+                      <span className="w-[7.5rem] shrink-0 text-muted-foreground">{r.label}</span>
+                      <span className="min-w-0 font-medium">{r.value}</span>
+                    </div>
+                  ))}
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       )}
     </div>

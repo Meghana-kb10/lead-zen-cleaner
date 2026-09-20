@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <defs>
+    <linearGradient id="gharpayy-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fb923c" />
+      <stop offset="100%" stop-color="#ea580c" />
+    </linearGradient>
+  </defs>
+  <!-- Rounded Brand Container -->
+  <rect width="32" height="32" rx="7" fill="url(#gharpayy-grad)" />
+  <!-- Gharpayy Living / Property Icon -->
+  <path d="M16 6.5L6.5 14.2C6.18 14.46 6 14.85 6 15.26V24.5C6 25.33 6.67 26 7.5 26H12.5V19C12.5 18.45 12.95 18 13.5 18H18.5C19.05 18 19.5 18.45 19.5 19V26H24.5C25.33 26 26 25.33 26 24.5V15.26C26 14.85 25.82 14.46 25.5 14.2L16 6.5Z" fill="#ffffff" />
+  <!-- Modern Window Accent -->
+  <rect x="13.5" y="12" width="5" height="3.5" rx="1" fill="#ffffff" fill-opacity="0.8" />
+</svg>

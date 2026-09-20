@@ -7,11 +7,13 @@ import { cn } from "@/lib/utils";
 import { XCircle } from "lucide-react";
 import { CLOSE_PROBLEMS } from "@/lib/commitments/windows";
 import { markBroken } from "@/lib/commitments/store";
+import { isValidUUID, trySyncAuditLog } from "@/lib/backend-safety";
 
 interface Props {
   commitmentId: string;
   leadName: string;
   actorName: string;
+  leadId?: string;
   onDone?: () => void;
   trigger?: ReactNode;
 }
@@ -20,7 +22,7 @@ interface Props {
  * A promise can never break silently. If it did not close, the closer says in one
  * tap what problem came up — that list is what the daily review actually fixes.
  */
-export function NotClosedDialog({ commitmentId, leadName, actorName, onDone, trigger }: Props) {
+export function NotClosedDialog({ commitmentId, leadName, actorName, leadId, onDone, trigger }: Props) {
   const [open, setOpen] = useState(false);
   const [problem, setProblem] = useState<string>("");
   const [note, setNote] = useState("");
@@ -31,6 +33,16 @@ export function NotClosedDialog({ commitmentId, leadName, actorName, onDone, tri
       return;
     }
     markBroken(commitmentId, actorName, problem, note);
+    if (isValidUUID(leadId)) {
+      void trySyncAuditLog(
+        "close_commitment",
+        leadId,
+        "closing.broken",
+        { status: "open", commitmentId },
+        { status: "broken", commitmentId, problem, note: note.trim() || undefined },
+        `Closing promise broken: ${problem}`
+      );
+    }
     toast.warning(`Logged: ${leadName} did not close`, { description: problem });
     setProblem("");
     setNote("");

@@ -14,6 +14,7 @@ import type { FlowLead } from "@/bookingflow/types";
 import { useBookingFlow } from "@/bookingflow/store";
 import { SCREENS, currentScreen, screenIndex, screenProgress } from "./screens";
 import type { Screen } from "./screens";
+import { trySyncAuditLog } from "@/lib/backend-safety";
 
 const inputType = (kind: JStep["kind"] | "TEXT" | "NUMBER" | "DATE" | "DATETIME") =>
   kind === "DATE" ? "date" : kind === "DATETIME" ? "datetime-local" : kind === "NUMBER" ? "number" : "text";
@@ -26,6 +27,7 @@ export function ScreenPanel({
   expert,
   onPrev,
   onNext,
+  onNextCustomer,
   canPrev,
   canNext,
 }: {
@@ -34,12 +36,14 @@ export function ScreenPanel({
   expert: boolean;
   onPrev?: () => void;
   onNext?: () => void;
+  onNextCustomer?: () => void;
   canPrev?: boolean;
   canNext?: boolean;
 }) {
   const { answerStep, editFields } = useBookingFlow();
   const f = lead.f ?? {};
   const [draft, setDraft] = useState<Record<string, string>>({});
+  const [syncState, setSyncState] = useState<"IDLE" | "SYNCING" | "PENDING" | "SYNCED">("IDLE");
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => setDraft({}), [screen.id, lead.id]);
@@ -119,12 +123,28 @@ export function ScreenPanel({
     return true;
   }
 
-  const saveAndNext = useCallback(() => {
-    if (Object.keys(draft).length > 0 && !saveAll(true)) return;
+  const saveAndNext = useCallback(async () => {
+    if (syncState === "SYNCING") return;
+    const changes = { ...draft };
+    
+    if (Object.keys(changes).length > 0) {
+      setSyncState("SYNCING");
+      const saved = saveAll(true);
+      if (!saved) {
+        setSyncState("IDLE");
+        return;
+      }
+      
+      const synced = await trySyncAuditLog("lead", lead.id, `Updated ${screen.title}`, f, { ...f, ...changes }, "Saved & Next");
+      setSyncState(synced ? "SYNCED" : "PENDING");
+      if (!synced) toast.warning("Saved locally — sync pending", { duration: 2000 });
+    }
+
     if (canNext) onNext?.();
+    else if (onNextCustomer) onNextCustomer();
     else toast.success("This is the last screen");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft, canNext, onNext]);
+  }, [draft, canNext, onNext, onNextCustomer, syncState, lead.id, screen.title, f]);
 
   /** Enter moves to the next box, and from the last box to the next screen. */
   function focusNextField(from: HTMLElement) {
@@ -162,26 +182,68 @@ export function ScreenPanel({
     return () => window.removeEventListener("keydown", onKey);
   }, [saveAndNext, canPrev, onPrev]);
 
-  const nav = (
-    <div className="flex items-center gap-1.5">
-      <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={!canPrev} onClick={() => onPrev?.()}>
-        <ArrowLeft className="mr-1 h-3.5 w-3.5" />Previous screen
-      </Button>
-      <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={!canNext} onClick={saveAndNext}>
-        Save &amp; next screen<ArrowRight className="ml-1 h-3.5 w-3.5" />
-      </Button>
-    </div>
+  const [copyStatus, setCopyStatus] = useState<string | null>(null);
+
+  const hasMeaningfulData = Boolean(
+    (merged.area && merged.area.trim()) ||
+    (merged.budget && merged.budget.trim()) ||
+    (merged.roomType && merged.roomType.trim()) ||
+    (merged.moveIn && merged.moveIn.trim())
   );
 
+  const waDraft = useMemo(() => {
+    if (!hasMeaningfulData) return null;
+    const name = lead.name.trim().split(" ")[0] || "there";
+    const area = merged.area?.trim();
+    const budget = merged.budget?.trim();
+    const roomType = merged.roomType?.trim();
+    const moveIn = merged.moveIn?.trim();
+
+    const parts: string[] = [];
+    if (area) parts.push(`your ${area} preference`);
+    if (budget) parts.push(`a ₹${budget} budget`);
+    if (roomType) parts.push(`${roomType} room`);
+    if (moveIn) parts.push(`move-in by ${moveIn}`);
+
+    return `Hi ${name}, I’ve noted ${parts.join(" and ")}. I’ll check the available options and update you shortly.`;
+  }, [hasMeaningfulData, merged.area, merged.budget, merged.roomType, merged.moveIn, lead.name]);
+
+  function copyDraft() {
+    if (!waDraft) return;
+    if (navigator?.clipboard?.writeText) {
+      navigator.clipboard.writeText(waDraft)
+        .then(() => {
+          setCopyStatus("Copied!");
+          toast.success("Draft copied to clipboard");
+          setTimeout(() => setCopyStatus(null), 2000);
+        })
+        .catch((err) => {
+          console.warn("Clipboard copy failed", err);
+          setCopyStatus("Failed");
+          toast.error("Could not copy to clipboard. Please copy manually.");
+        });
+    } else {
+      toast.error("Clipboard access not supported in this environment");
+    }
+  }
+
+  const firstUnansweredIndex = screen.steps.findIndex((st) => !isStepDone(f, st));
+
   return (
-    <Card className="p-4" ref={rootRef}>
-      <div className="flex flex-wrap items-center gap-2">
-        <Badge variant="outline" className="text-[10px]">Screen {idx + 1} of {SCREENS.length}</Badge>
-        <Badge variant="secondary" className="text-[10px]">{screen.title}</Badge>
-        <Badge variant="outline" className="text-[10px]">{p.done}/{p.total} answered</Badge>
-        {locked && <Badge variant="outline" className="text-[10px]"><Lock className="mr-1 h-3 w-3" />Opens after “{now.title}”</Badge>}
-        {idx === nowIdx && <Badge className="text-[10px]">Do this now</Badge>}
-        <div className="ml-auto">{nav}</div>
+    <Card className="p-3 sm:p-4" ref={rootRef}>
+      {/* Screen Title & Progress Header */}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-2">
+        <div className="flex items-center gap-1.5 text-xs">
+          <Badge variant="outline" className="text-[10px]">Screen {idx + 1} of {SCREENS.length}</Badge>
+          <span className="font-semibold text-foreground text-xs">{screen.title}</span>
+          <span className="text-muted-foreground text-[10px]">({p.done}/{p.total} answered)</span>
+          {locked && <Badge variant="outline" className="text-[10px]"><Lock className="mr-1 h-3 w-3" />Opens after “{now.title}”</Badge>}
+        </div>
+        {canPrev && (
+          <Button size="sm" variant="ghost" className="h-6 px-1.5 text-[10px] text-muted-foreground hover:text-foreground" onClick={() => onPrev?.()}>
+            <ArrowLeft className="mr-1 h-3 w-3" />Back
+          </Button>
+        )}
       </div>
 
       {locked ? (
@@ -189,15 +251,38 @@ export function ScreenPanel({
           Finish “{now.title}” first. Still needed there: {now.steps.flatMap((s) => missingOn(f, s)).join(", ") || "an answer"}.
         </p>
       ) : (
-        <div className="mt-3 space-y-3">
+        <div className="mt-3 space-y-2.5">
           {screen.steps.map((st, i) => {
             const done = isStepDone(f, st);
+            const isCurrentTask = !done && (i === firstUnansweredIndex || firstUnansweredIndex === -1);
+
             return (
-              <div key={st.key} className={cn("rounded-lg border p-3", done && "bg-muted/30")}>
+              <div
+                key={st.key}
+                className={cn(
+                  "rounded-lg transition-all",
+                  isCurrentTask
+                    ? "border-2 border-primary/70 bg-card p-3 shadow-xs ring-1 ring-primary/20"
+                    : done
+                      ? "border border-border/40 bg-muted/20 p-2.5 opacity-90 hover:opacity-100"
+                      : "border border-dashed border-border/60 bg-muted/5 p-2.5 text-muted-foreground/85"
+                )}
+              >
                 <div className="flex flex-wrap items-baseline gap-2">
-                  <span className="text-xs text-muted-foreground">{i + 1}.</span>
-                  <p className="text-sm font-medium">{st.question}</p>
-                  {done && <Badge className="bg-primary/15 text-[10px] text-primary hover:bg-primary/15"><Check className="mr-1 h-3 w-3" />done</Badge>}
+                  <span className={cn("text-xs", isCurrentTask ? "font-bold text-primary" : "text-muted-foreground")}>{i + 1}.</span>
+                  <p className={cn("text-sm", isCurrentTask ? "font-semibold text-foreground" : done ? "font-normal text-muted-foreground" : "font-medium text-foreground/80")}>
+                    {st.question}
+                  </p>
+                  {isCurrentTask && (
+                    <Badge variant="default" className="text-[9px] h-4 px-1.5 font-semibold bg-primary text-primary-foreground">
+                      Answer now
+                    </Badge>
+                  )}
+                  {done && (
+                    <Badge variant="outline" className="text-[9px] h-4 px-1.5 font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/25">
+                      <Check className="mr-0.5 h-2.5 w-2.5" />Answered
+                    </Badge>
+                  )}
                   <span className="ml-auto text-[10px] text-muted-foreground">waiting on {st.waitingOn}</span>
                 </div>
                 <p className="mt-0.5 text-xs text-muted-foreground">{st.help}</p>
@@ -212,7 +297,7 @@ export function ScreenPanel({
                         title={o.hint}
                         className={cn(
                           "rounded-full border px-2.5 py-1 text-[11px] transition",
-                          val(st.field) === o.value ? "border-primary bg-primary/15 text-primary" : "text-muted-foreground hover:bg-accent",
+                          val(st.field) === o.value ? "border-primary bg-primary/15 text-primary font-medium" : "text-muted-foreground hover:bg-accent",
                           o.effect && "border-destructive/50",
                         )}
                       >
@@ -272,15 +357,54 @@ export function ScreenPanel({
             );
           })}
 
-          <div className="flex flex-wrap items-center gap-2 border-t pt-3">
-            <Button size="sm" onClick={() => saveAll()}>Save this screen</Button>
-            <Button size="sm" variant="ghost" onClick={() => setDraft({})} disabled={Object.keys(draft).length === 0}>Clear my edits</Button>
-            {nav}
-            <span className="text-[11px] text-muted-foreground">
-              Keyboard: <b>Enter</b> saves and jumps to the next box, <b>Enter</b> on the last box moves to the next screen.
-              <b> Ctrl/⌘+Enter</b> jumps ahead any time, <b>←</b> and <b>→</b> walk the screens.
-            </span>
+          {/* Contextual WhatsApp draft — displayed prominently only when meaningful qualification data exists */}
+          {waDraft && (
+            <div className="mt-3 rounded-md border border-primary/30 bg-primary/5 p-2.5">
+              <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+                  <p className="text-[10px] font-semibold text-primary uppercase tracking-wide">Customer WhatsApp Draft</p>
+                </div>
+                <Button size="sm" variant="outline" className="h-6 text-[10px] px-2" onClick={copyDraft}>
+                  {copyStatus || "Copy message"}
+                </Button>
+              </div>
+              <p className="text-xs text-foreground select-all bg-background/70 p-2 rounded border border-border/40 font-mono text-[11px] leading-relaxed">
+                {waDraft}
+              </p>
+            </div>
+          )}
+
+          {/* Action Bar — Save & Next as clear primary workflow action */}
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-3 mt-3">
+            <div className="flex items-center gap-1.5">
+              <Button size="sm" variant="outline" className="h-8 px-2.5 text-xs" disabled={!canPrev} onClick={() => onPrev?.()}>
+                <ArrowLeft className="mr-1 h-3.5 w-3.5" />Previous
+              </Button>
+              {Object.keys(draft).length > 0 && (
+                <Button size="sm" variant="ghost" className="h-8 px-2 text-xs text-muted-foreground hover:text-foreground" onClick={() => setDraft({})}>
+                  Clear edits
+                </Button>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Button
+                size="default"
+                variant="default"
+                className="h-8 px-4 text-xs font-semibold shadow-xs"
+                onClick={saveAndNext}
+                disabled={syncState === "SYNCING"}
+              >
+                {syncState === "SYNCING" ? "Saving..." : canNext ? "Save & Next" : "Save & Next Customer"}
+                <ArrowRight className="ml-1.5 h-3.5 w-3.5" />
+              </Button>
+            </div>
           </div>
+
+          <p className="text-[10px] text-muted-foreground/80 mt-1">
+            Keyboard: <kbd className="font-mono font-medium text-foreground">Enter</kbd> saves &amp; jumps next · <kbd className="font-mono font-medium text-foreground">Ctrl/⌘+Enter</kbd> jumps ahead · <kbd className="font-mono font-medium text-foreground">←</kbd> <kbd className="font-mono font-medium text-foreground">→</kbd> screens
+          </p>
         </div>
       )}
     </Card>
