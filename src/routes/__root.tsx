@@ -28,7 +28,7 @@ function NotFoundComponent() {
         <h2 className="mt-4 text-xl font-semibold">Page not found</h2>
         <div className="mt-6">
           <Link
-            to="/"
+            to="/os"
             className="inline-flex items-center justify-center rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-foreground hover:opacity-90 transition-opacity"
           >
             Back to Dashboard

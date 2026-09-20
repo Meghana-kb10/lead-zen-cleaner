@@ -298,7 +298,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <div className="min-h-screen flex w-full bg-background text-foreground">
       {/* Sidebar */}
       <aside className="hidden md:flex w-[240px] flex-col bg-sidebar text-sidebar-foreground border-r border-sidebar-border sticky top-0 h-screen">
-        <div className="px-5 py-5 flex items-center gap-2 border-b border-sidebar-border">
+        <Link to="/os" className="px-5 py-5 flex items-center gap-2 border-b border-sidebar-border hover:bg-sidebar-accent/30 transition-colors">
           <div className="h-9 w-9 rounded-lg bg-accent flex items-center justify-center">
             <Building2 className="h-4 w-4 text-accent-foreground" />
           </div>
@@ -306,7 +306,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <div className="text-sidebar-accent-foreground font-display font-semibold text-sm">Gharpayy</div>
             <div className="text-[10px] uppercase tracking-wider text-sidebar-foreground">Arena Infrastructure</div>
           </div>
-        </div>
+        </Link>
 
         {(() => {
           const roleMeta = {
